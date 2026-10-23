@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>Destiny Stone</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header id="titlebar">
+      <div class="brand" title="Destiny Stone">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z" fill="url(#ds-g)"/>
+          <circle cx="9" cy="9" r="1.8" fill="#fff"/><circle cx="9" cy="15" r="1.8" fill="#fff"/><circle cx="15" cy="12" r="1.8" fill="#fff"/>
+          <path d="M9 10.8v2.4M10.6 9.8l2.8 1.4" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/>
+          <defs><linearGradient id="ds-g" x1="4" y1="3" x2="20" y2="21"><stop stop-color="#6aa1ff"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        </svg>
+      </div>
+      <nav id="tabs"></nav>
+      <div class="titlebar-fill"></div>
+    </header>
+
+    <div id="home" class="hidden"></div>
+
+    <div id="workspace" class="hidden">
+      <div id="toolbar"></div>
+      <div id="banner" class="hidden"></div>
+      <div id="body">
+        <aside id="sidebar"></aside>
+        <div class="resizer resizer-x" data-target="sidebar" data-key="sidebar" data-min="190" data-max="480"></div>
+        <main id="main">
+          <section id="view-history" class="view">
+            <div id="history-top">
+              <div class="list-toolbar">
+                <div class="search">
+                  <span class="search-icon" data-icon="search"></span>
+                  <input id="history-filter" type="text" placeholder="Buscar por mensaje, autor o hash" spellcheck="false">
+                </div>
+                <label class="switch" title="Mostrar todas las ramas o solo la actual">
+                  <input id="all-branches" type="checkbox">
+                  <span class="switch-track"></span>
+                  <span>Todas las ramas</span>
+                </label>
+                <span id="history-count" class="muted small"></span>
+              </div>
+              <div class="history-header">
+                <div class="c-graph">Grafo</div>
+                <div class="c-desc">Descripción</div>
+                <div class="c-author">Autor</div>
+                <div class="c-date">Fecha</div>
+                <div class="c-hash">Commit</div>
+              </div>
+              <div id="history-scroll" tabindex="0">
+                <div id="history-spacer"></div>
+                <div id="history-rows"></div>
+              </div>
+            </div>
+            <div class="resizer resizer-y" data-target="history-top" data-key="historyTop" data-min="120" data-max="2000"></div>
+            <div id="commit-detail">
+              <div id="detail-left"></div>
+              <div class="resizer resizer-x" data-target="detail-left" data-key="detailLeft" data-min="240" data-max="900"></div>
+              <div id="detail-diff" class="diff-host"></div>
+            </div>
+          </section>
+
+          <section id="view-changes" class="view hidden">
+            <div id="changes-left">
+              <div id="conflicted-panel" class="file-panel hidden"></div>
+              <div id="staged-panel" class="file-panel"></div>
+              <div id="unstaged-panel" class="file-panel"></div>
+              <div id="commit-box">
+                <textarea id="commit-message" placeholder="Mensaje del commit…   (Ctrl+Enter para confirmar)" spellcheck="true"></textarea>
+                <div class="commit-row">
+                  <label class="check"><input id="commit-amend" type="checkbox"> Modificar último commit</label>
+                  <label class="check"><input id="commit-push" type="checkbox"> Push al confirmar</label>
+                  <span id="commit-counter" class="muted small"></span>
+                </div>
+                <button id="commit-btn" class="btn primary block"></button>
+              </div>
+            </div>
+            <div class="resizer resizer-x" data-target="changes-left" data-key="changesLeft" data-min="280" data-max="900"></div>
+            <div id="changes-diff" class="diff-host"></div>
+          </section>
+
+          <div id="repo-error" class="hidden"></div>
+        </main>
+      </div>
+    </div>
+
+    <footer id="statusbar"></footer>
+  </div>
+  <div id="overlay-root"></div>
+  <div id="drop-hint" class="hidden"><div>Suelta una carpeta para añadir el repositorio</div></div>
+
+  <script src="diff-core.js"></script>
+  <script src="graph.js"></script>
+  <script src="ui.js"></script>
+  <script src="diff-view.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
