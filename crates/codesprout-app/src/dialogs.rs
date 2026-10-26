@@ -300,7 +300,8 @@ impl App {
                 }
                 if ok {
                     let (Some(p), r, n) = (path, remote_ref.clone(), git::branch_name(name)) else { return Out::Close };
-                    self.op("Checkout", move || git::checkout_remote(&p, &r, &n), |app, _| app.ok("Rama creada"));
+                    let text = format!("Creando la rama {n} y cambiando a ella…");
+                    self.op_shown("Checkout", text, move || git::checkout_remote(&p, &r, &n), |app, _| app.ok("Rama creada"));
                     return Out::Close;
                 }
             }

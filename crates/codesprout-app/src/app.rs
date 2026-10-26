@@ -25,10 +25,20 @@ pub enum ToastKind {
     Error,
 }
 
+/// Notice shown in a small modal in the centre of the window. Successes and info close by
+/// themselves; warnings and errors stay until closed (`until` is `None`).
 pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
-    pub until: Instant,
+    pub until: Option<Instant>,
+}
+
+/// Local operation in progress (checkout, commit, merge…), shown in a small modal with a spinner:
+/// right away when `immediate`, otherwise only if it takes long enough to be noticed.
+pub struct Working {
+    pub text: String,
+    pub since: Instant,
+    pub immediate: bool,
 }
 
 /// Network operation in progress (clone, fetch, push…), shown with its git output.
@@ -46,6 +56,7 @@ pub struct App {
     pub active: Option<usize>,
     pub bus: Bus,
     pub busy: Option<String>,
+    pub working: Option<Working>,
     pub dialogs: Vec<Dialog>,
     pub toasts: Vec<Toast>,
     pub progress: Option<Progress>,
@@ -73,6 +84,7 @@ impl App {
             active: None,
             bus: Bus::new(cc.egui_ctx.clone()),
             busy: None,
+            working: None,
             dialogs: vec![],
             toasts: vec![],
             progress: None,
@@ -136,12 +148,11 @@ impl App {
     // ---------------------------------------------------------------- notifications
 
     pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
-        let secs = match kind {
-            ToastKind::Error => 8,
-            ToastKind::Warn => 6,
-            _ => 3,
+        let until = match kind {
+            ToastKind::Error | ToastKind::Warn => None,
+            _ => Some(Instant::now() + Duration::from_millis(2200)),
         };
-        self.toasts.push(Toast { text: text.into(), kind, until: Instant::now() + Duration::from_secs(secs) });
+        self.toasts.push(Toast { text: text.into(), kind, until });
         if self.toasts.len() > 5 {
             self.toasts.remove(0);
         }
@@ -448,7 +459,7 @@ impl App {
     // ---------------------------------------------------------------- frame
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if !self.dialogs.is_empty() || self.progress.is_some() {
+        if !self.dialogs.is_empty() || self.progress.is_some() || self.working.is_some() || !self.toasts.is_empty() {
             return;
         }
         let (f5, t, w, one, two, tab, shift, f) = ctx.input_mut(|i| {
@@ -564,8 +575,8 @@ impl App {
         } else if self.dirty_since.is_some() {
             ctx.request_repaint_after(Duration::from_millis(650));
         }
-        self.toasts.retain(|t| t.until > now);
-        if let Some(t) = self.toasts.iter().map(|t| t.until).min() {
+        self.toasts.retain(|t| t.until.is_none_or(|u| u > now));
+        if let Some(t) = self.toasts.iter().filter_map(|t| t.until).min() {
             ctx.request_repaint_after(t.saturating_duration_since(now));
         }
         // folders dropped on the window
@@ -582,14 +593,26 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let mut activate = None;
                 let mut close = None;
+                // tabs are reordered by dragging them: (dragged tab, pointer x) and every tab's centre
+                let mut dragging: Option<(usize, f32)> = None;
+                let mut centres = Vec::with_capacity(self.tabs.len());
                 for (i, t) in self.tabs.iter().enumerate() {
                     let active = self.active == Some(i);
                     let name = t.name();
                     let dirty = t.change_count() > 0;
                     let font = FontId::proportional(13.0);
                     let w = ui.painter().layout_no_wrap(name.clone(), font.clone(), c.text).size().x;
-                    let (rect, resp) = ui.allocate_exact_size(vec2((w + 64.0).min(240.0), 30.0), Sense::click());
-                    let fill = if active { c.surface } else if resp.hovered() { c.hover } else { Color32::TRANSPARENT };
+                    let (rect, _) = ui.allocate_exact_size(vec2((w + 64.0).min(240.0), 30.0), Sense::hover());
+                    // the id follows the repository, not the position, so a drag survives the reorder
+                    let resp = ui.interact(rect, egui::Id::new(("tab", &t.key)), Sense::click_and_drag());
+                    centres.push(rect.center().x);
+                    if resp.dragged() {
+                        if let Some(p) = resp.interact_pointer_pos() {
+                            dragging = Some((i, p.x));
+                        }
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    }
+                    let fill = if active || resp.dragged() { c.surface } else if resp.hovered() { c.hover } else { Color32::TRANSPARENT };
                     ui.painter().rect_filled(rect, egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, fill);
                     if active {
                         ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0_f32, c.accent));
@@ -660,6 +683,16 @@ impl App {
                     ui.add_space(6.0);
                     self.update_button(ui);
                 });
+                if let Some((from, x)) = dragging {
+                    let to = centres.iter().enumerate().filter(|&(j, &cx)| j != from && cx < x).count();
+                    if to != from {
+                        let active_key = self.tab().map(|t| t.key.clone());
+                        let tab = self.tabs.remove(from);
+                        self.tabs.insert(to, tab);
+                        self.active = active_key.and_then(|k| self.tabs.iter().position(|t| t.key == k));
+                        self.persist();
+                    }
+                }
                 if let Some(i) = close {
                     self.close_tab(i);
                 } else if let Some(i) = activate {
@@ -847,59 +880,73 @@ impl App {
         });
     }
 
+    /// Notices in a small modal in the centre. Clicking outside or Esc closes them, and so does
+    /// "Cerrar" for warnings and errors, which don't close by themselves.
     fn toasts_ui(&mut self, ctx: &egui::Context) {
-        if self.toasts.is_empty() {
+        if self.toasts.is_empty() || self.working.is_some() {
             return;
         }
         let c = theme::p();
-        egui::Area::new(egui::Id::new("toasts")).anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -36.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-            ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
-                let mut remove = None;
-                for (i, t) in self.toasts.iter().enumerate().rev() {
-                    let color = match t.kind {
-                        ToastKind::Info => c.accent,
-                        ToastKind::Success => c.green,
-                        ToastKind::Warn => c.yellow,
-                        ToastKind::Error => c.red,
-                    };
-                    let resp = egui::Frame::new()
-                        .fill(c.panel)
-                        .stroke(Stroke::new(1.0_f32, c.border_strong))
-                        .corner_radius(8)
-                        .shadow(ui.visuals().popup_shadow)
-                        .inner_margin(egui::Margin { left: 12, right: 14, top: 9, bottom: 9 })
-                        .show(ui, |ui| {
-                            ui.set_max_width(420.0);
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                let icon = match t.kind {
-                                    ToastKind::Success => Icon::Check,
-                                    ToastKind::Info => Icon::Eye,
-                                    _ => Icon::Alert,
-                                };
-                                icons::show(ui, icon, 15.0, color);
-                                ui.add(egui::Label::new(RichText::new(&t.text).color(c.text)).wrap());
-                            });
-                        })
-                        .response
-                        .interact(Sense::click());
-                    if resp.clicked() {
-                        remove = Some(i);
+        let sticky = self.toasts.iter().any(|t| t.until.is_none());
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("notice")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            for (i, t) in self.toasts.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(8.0);
+                }
+                let (icon, color) = match t.kind {
+                    ToastKind::Success => (Icon::Check, c.green),
+                    ToastKind::Info => (Icon::Eye, c.accent),
+                    ToastKind::Warn => (Icon::Alert, c.yellow),
+                    ToastKind::Error => (Icon::Alert, c.red),
+                };
+                ui.horizontal_top(|ui| {
+                    icons::show(ui, icon, 18.0, color);
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(&t.text).size(14.0).color(c.text)).wrap());
+                });
+            }
+            if sticky {
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::primary_button(ui, "Cerrar", true).clicked() {
+                        close = true;
                     }
-                    ui.add_space(6.0);
-                }
-                if let Some(i) = remove {
-                    self.toasts.remove(i);
-                }
+                });
+            }
+        });
+        if close || modal.should_close() {
+            self.toasts.clear();
+        }
+    }
+
+    /// Spinner modal while a local operation runs (see [`Working`]).
+    fn working_ui(&mut self, ctx: &egui::Context) {
+        let Some(w) = &self.working else { return };
+        let delay = Duration::from_millis(300);
+        if !w.immediate && w.since.elapsed() < delay {
+            ctx.request_repaint_after(delay - w.since.elapsed());
+            return;
+        }
+        egui::Modal::new(egui::Id::new("working")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(20.0));
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(RichText::new(&w.text).size(14.0)).wrap());
             });
         });
     }
 
+    /// Network operation in progress: a plain-language description, a progress bar when git
+    /// reports a percentage, and git's own output folded away under "Ver detalles técnicos".
     fn progress_ui(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.progress else { return };
         let c = theme::p();
         let mut close = false;
         egui::Modal::new(egui::Id::new("progress")).show(ctx, |ui| {
-            ui.set_width(520.0);
+            ui.set_width(440.0);
             ui.horizontal(|ui| {
                 match &p.done {
                     None => {
@@ -914,22 +961,42 @@ impl App {
                 }
                 ui.heading(&p.title);
             });
-            ui.add_space(6.0);
-            egui::Frame::new().fill(c.bg).corner_radius(6).inner_margin(8).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                egui::ScrollArea::vertical().max_height(180.0).stick_to_bottom(true).show(ui, |ui| {
-                    if p.lines.is_empty() {
-                        ui.label(widgets::small("Conectando…"));
+            ui.add_space(8.0);
+            match &p.done {
+                None => {
+                    ui.label(RichText::new(progress_message(&p.title)).color(c.text2));
+                    ui.add_space(6.0);
+                    match git_stage(&p.lines) {
+                        Some((stage, Some(pct))) => {
+                            ui.add(egui::ProgressBar::new(pct).text(format!("{stage}… {} %", (pct * 100.0).round())));
+                        }
+                        Some((stage, None)) => {
+                            ui.label(widgets::small(format!("{stage}…")));
+                        }
+                        None => {
+                            ui.label(widgets::small("Conectando con el servidor…"));
+                        }
                     }
-                    for l in p.lines.iter().rev().take(200).rev() {
-                        ui.label(RichText::new(l).font(theme::mono(11.5)).color(c.text2));
-                    }
+                }
+                Some(Ok(())) => {
+                    ui.label("Completado.");
+                }
+                Some(Err(e)) => widgets::error_box(ui, e),
+            }
+            ui.add_space(8.0);
+            egui::CollapsingHeader::new(widgets::small("Ver detalles técnicos")).id_salt("progress-log").default_open(false).show(ui, |ui| {
+                egui::Frame::new().fill(c.bg).corner_radius(6).inner_margin(8).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical().max_height(180.0).stick_to_bottom(true).show(ui, |ui| {
+                        if p.lines.is_empty() {
+                            ui.label(widgets::small("Sin salida todavía."));
+                        }
+                        for l in p.lines.iter().rev().take(200).rev() {
+                            ui.label(RichText::new(l).font(theme::mono(11.5)).color(c.text2));
+                        }
+                    });
                 });
             });
-            if let Some(Err(e)) = &p.done {
-                ui.add_space(6.0);
-                widgets::error_box(ui, e);
-            }
             ui.add_space(8.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &p.done {
                 None => {
@@ -950,6 +1017,49 @@ impl App {
             self.progress = None;
         }
     }
+}
+
+/// What a network operation does, in words for someone who doesn't know Git.
+fn progress_message(title: &str) -> &'static str {
+    let t = title.to_lowercase();
+    if t.starts_with("pull") {
+        "Descargando los cambios del servidor y añadiéndolos a tu rama."
+    } else if t.starts_with("push") {
+        "Enviando tus commits al servidor."
+    } else if t.starts_with("fetch") {
+        "Comprobando si hay novedades en el servidor."
+    } else if t.starts_with("clonar") {
+        "Descargando una copia del repositorio."
+    } else if t.contains("submódulo") {
+        "Descargando los submódulos del repositorio."
+    } else if t.contains("lfs") {
+        "Descargando los archivos grandes (LFS)."
+    } else if t.contains("etiqueta") && t.starts_with("enviar") {
+        "Enviando la etiqueta al servidor."
+    } else {
+        "Aplicando el cambio en el servidor."
+    }
+}
+
+/// Current step of a git network command and its percentage, from the newest progress line
+/// git printed ("Receiving objects:  45% (450/1000)") translated to plain words.
+fn git_stage(lines: &[String]) -> Option<(&'static str, Option<f32>)> {
+    lines.iter().rev().find_map(|line| {
+        let line = line.trim().trim_start_matches("remote:").trim();
+        let (phase, rest) = line.split_once(':')?;
+        let stage = match phase.trim() {
+            "Enumerating objects" | "Counting objects" => "Preparando",
+            "Compressing objects" => "Comprimiendo",
+            "Receiving objects" => "Descargando",
+            "Writing objects" => "Subiendo",
+            "Resolving deltas" => "Procesando",
+            "Updating files" | "Checking out files" => "Actualizando archivos",
+            "Filtering content" => "Descargando archivos grandes",
+            _ => return None,
+        };
+        let pct = rest.split('%').next().and_then(|s| s.trim().parse::<f32>().ok()).filter(|_| rest.contains('%'));
+        Some((stage, pct.map(|p| (p / 100.0).clamp(0.0, 1.0))))
+    })
 }
 
 pub fn same_path(a: &str, b: &str) -> bool {
@@ -1015,6 +1125,7 @@ impl eframe::App for App {
         }
         self.show_dialogs(ctx);
         self.progress_ui(ctx);
+        self.working_ui(ctx);
         self.toasts_ui(ctx);
         // remember the window geometry
         let (rect, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));

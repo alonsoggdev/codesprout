@@ -63,15 +63,40 @@ impl App {
         work: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
         done: impl FnOnce(&mut App, T) + Send + 'static,
     ) {
+        self.op_with(label, None, work, done)
+    }
+
+    /// Like [`App::op`], but `text` is shown in the progress modal from the very start instead of
+    /// only when the operation takes a while.
+    pub fn op_shown<T: Send + 'static>(
+        &mut self,
+        label: &str,
+        text: String,
+        work: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+        done: impl FnOnce(&mut App, T) + Send + 'static,
+    ) {
+        self.op_with(label, Some(text), work, done)
+    }
+
+    fn op_with<T: Send + 'static>(
+        &mut self,
+        label: &str,
+        text: Option<String>,
+        work: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+        done: impl FnOnce(&mut App, T) + Send + 'static,
+    ) {
         if let Some(b) = &self.busy {
             let msg = format!("Espera a que termine la operación en curso ({b}).");
             self.toast(msg, ToastKind::Warn);
             return;
         }
         self.busy = Some(label.to_string());
+        let immediate = text.is_some();
+        self.working = Some(crate::app::Working { text: text.unwrap_or_else(|| format!("{label}…")), since: Instant::now(), immediate });
         let label = label.to_string();
         self.bus.spawn(work, move |app, r| {
             app.busy = None;
+            app.working = None;
             match r {
                 Ok(v) => done(app, v),
                 Err(e) => app.show_git_error(&label, &e.to_string()),
@@ -891,7 +916,8 @@ impl App {
         }
         let p = t.path.clone();
         let n = name.clone();
-        self.op("Cambiar de rama", move || git::checkout(&p, &n), move |app, _| app.ok(format!("Ahora estás en {name}")));
+        let text = format!("Cambiando a la rama {name}…");
+        self.op_shown("Cambiar de rama", text, move || git::checkout(&p, &n), move |app, _| app.ok(format!("Ahora estás en {name}")));
     }
 
     pub fn checkout_remote_branch(&mut self, remote_name: String, branch: String) {
@@ -920,7 +946,8 @@ impl App {
             move |app| {
                 let Some(p) = app.path() else { return };
                 let h = hash.clone();
-                app.op("Checkout", move || git::checkout_detached(&p, &h), move |app, _| app.ok(format!("HEAD en {short}")));
+                let text = format!("Cambiando al commit {short}…");
+                app.op_shown("Checkout", text, move || git::checkout_detached(&p, &h), move |app, _| app.ok(format!("HEAD en {short}")));
             },
         );
     }
