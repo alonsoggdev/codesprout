@@ -180,8 +180,8 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
                     let n = name.clone();
                     defer.push(Box::new(move |a| {
                         if let Some(p) = a.active_path() {
-                            if let Some(r) = ds_core::repo::remotes_info(&p).ok().and_then(|l| l.into_iter().find(|r| r.name == n)) {
-                                match ds_core::hosting::RemoteRef::parse(&r.url) {
+                            if let Some(r) = codesprout_core::repo::remotes_info(&p).ok().and_then(|l| l.into_iter().find(|r| r.name == n)) {
+                                match codesprout_core::hosting::RemoteRef::parse(&r.url) {
                                     Some(rr) => {
                                         let _ = open::that(rr.web_url());
                                     }
@@ -200,7 +200,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
                         a.confirm("Eliminar remoto", &msg, None, "Eliminar", true, move |a| {
                             let Some(p) = a.active_path() else { return };
                             let n2 = n.clone();
-                            a.op("Eliminar remoto", move || ds_core::repo::remove_remote(&p, &n2), |a, _| a.ok("Remoto eliminado"));
+                            a.op("Eliminar remoto", move || codesprout_core::repo::remove_remote(&p, &n2), |a, _| a.ok("Remoto eliminado"));
                         });
                     }));
                     ui.close_menu();

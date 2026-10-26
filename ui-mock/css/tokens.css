@@ -1,4 +1,4 @@
-/* Design tokens. Mirror of crates/ds-app/src/theme.rs (Palette, fonts, sizes).
+/* Design tokens. Mirror of crates/codesprout-app/src/theme.rs (Palette, fonts, sizes).
    Any change here must be copied to theme.rs (and vice versa). Alphas: theme.rs uses 0-255. */
 
 :root {

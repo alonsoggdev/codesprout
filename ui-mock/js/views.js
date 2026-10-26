@@ -1,5 +1,5 @@
 // Views: history (explorer / list, search, detail), changes, diff viewer, secondary views and
-// home. Mirrors crates/ds-app/src/views/*.rs.
+// home. Mirrors crates/codesprout-app/src/views/*.rs.
 'use strict';
 
 const Views = (() => {
@@ -7,7 +7,7 @@ const Views = (() => {
   let explorer = null;
   let canvas = null;
 
-  // ---------------------------------------------------------------- diff model (ds-core diff.rs + repo_state.rs)
+  // ---------------------------------------------------------------- diff model (codesprout-core diff.rs + repo_state.rs)
   function parseDiff(text) {
     const files = [];
     let file = null, hunk = null;
@@ -483,13 +483,13 @@ const Views = (() => {
   // ---------------------------------------------------------------- home (views/home.rs)
   function home(el) {
     const card2 = (ic, t, s, act) => `<div class="card" data-act="${act}"><div class="ac">${icon(ic, 19)}</div><div><div class="t">${t}</div><div class="s">${s}</div></div></div>`;
-    el.innerHTML = `<div class="home"><div class="home-left"><h1>Destiny Stone</h1><p>Tu cliente Git: explorador de ramas, preparación por líneas, rebase interactivo, git-flow y pull requests.</p>
+    el.innerHTML = `<div class="home"><div class="home-left"><h1>CodeSprout</h1><p>Tu cliente Git: explorador de ramas, preparación por líneas, rebase interactivo, git-flow y pull requests.</p>
       ${card2('fetch', 'Clonar repositorio', 'Desde una URL o tus repos de GitHub/GitLab/Bitbucket', 'clone')}
       ${card2('folder', 'Añadir repositorio existente', 'Una carpeta que ya usa Git', 'mock-only')}
       ${card2('plus', 'Crear repositorio nuevo', 'Inicializa Git en una carpeta', 'mock-only')}
       ${card2('user', 'Cuentas', 'Inicia sesión con SSO en GitHub, GitLab, Bitbucket o Azure', 'accounts')}</div>
       <div class="home-right"><div class="head"><h2>Repositorios · 2</h2><input type="text" placeholder="Filtrar repositorios" style="margin-left:auto;width:220px"></div>
-      ${[[S.repo.name, S.repo.path], ['destiny-stone', 'D:\\GITHUB REPOS\\destiny-stone']].map(([n, p]) => `<div class="repo-row" data-act="tab"><div class="ri" style="background:${hashColor(n)}">${initials(n)}</div><div><div style="font-size:14px">${esc(n)}</div><div class="small">${esc(p)}</div></div></div>`).join('')}</div></div>`;
+      ${[[S.repo.name, S.repo.path], ['codesprout', 'D:\\GITHUB REPOS\\codesprout']].map(([n, p]) => `<div class="repo-row" data-act="tab"><div class="ri" style="background:${hashColor(n)}">${initials(n)}</div><div><div style="font-size:14px">${esc(n)}</div><div class="small">${esc(p)}</div></div></div>`).join('')}</div></div>`;
   }
 
   // ---------------------------------------------------------------- shared helpers

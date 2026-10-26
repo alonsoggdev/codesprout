@@ -6,12 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ds_core::diff::{build_patch, can_partial, parse_diff};
-use ds_core::explorer::{layout, ColumnMode, LaneKind};
-use ds_core::history::{self, SearchMode};
-use ds_core::rebase::{self, TodoAction, TodoEntry};
-use ds_core::repo::{self as g, CommitFlags, PushArgs};
-use ds_core::{extras, flow, DiffOptions, FileChange, RepoState, ResetMode};
+use codesprout_core::diff::{build_patch, can_partial, parse_diff};
+use codesprout_core::explorer::{layout, ColumnMode, LaneKind};
+use codesprout_core::history::{self, SearchMode};
+use codesprout_core::rebase::{self, TodoAction, TodoEntry};
+use codesprout_core::repo::{self as g, CommitFlags, PushArgs};
+use codesprout_core::{extras, flow, DiffOptions, FileChange, RepoState, ResetMode};
 
 fn sh(cwd: &Path, args: &[&str]) -> String {
     let o = Command::new("git").args(args).current_dir(cwd).output().expect("git");
@@ -448,7 +448,7 @@ fn search_by_message_author_content_and_path() {
     commit_all(&repo, "Fix: beta");
     write(&repo, "x.txt", "alpha\ngamma(1)\n");
     commit_all(&repo, "gamma");
-    let subj = |v: Vec<ds_core::Commit>| v.into_iter().map(|c| c.subject).collect::<Vec<_>>();
+    let subj = |v: Vec<codesprout_core::Commit>| v.into_iter().map(|c| c.subject).collect::<Vec<_>>();
     assert_eq!(subj(history::search(&repo, "fix:", SearchMode::Message, true, 100).unwrap()), ["Fix: beta"]);
     assert_eq!(history::search(&repo, "tester", SearchMode::Author, true, 100).unwrap().len(), 3);
     assert_eq!(subj(history::search(&repo, "gamma(1)", SearchMode::Content, true, 100).unwrap()), ["gamma"]);
@@ -659,16 +659,16 @@ fn explorer_layout_on_real_history() {
 
 #[test]
 fn hosting_urls_and_credential_hosts() {
-    use ds_core::credentials::{is_ssh_url, url_host, Provider};
-    use ds_core::hosting::RemoteRef;
+    use codesprout_core::credentials::{is_ssh_url, url_host, Provider};
+    use codesprout_core::hosting::RemoteRef;
     assert_eq!(url_host("https://user@github.com/a/b.git").as_deref(), Some("github.com"));
     assert_eq!(url_host("git@gitlab.com:grupo/sub/proyecto.git").as_deref(), Some("gitlab.com"));
     assert_eq!(url_host("ssh://git@bitbucket.org:22/a/b.git").as_deref(), Some("bitbucket.org"));
     assert!(is_ssh_url("git@github.com:a/b.git"));
     assert!(!is_ssh_url("https://github.com/a/b.git"));
-    let r = RemoteRef::parse("git@github.com:alonso/destiny-stone.git").unwrap();
-    assert_eq!((r.provider, r.path.as_str()), (Provider::GitHub, "alonso/destiny-stone"));
-    assert_eq!(r.new_pr_url("feature/x", "main"), "https://github.com/alonso/destiny-stone/compare/main...feature%2Fx?expand=1");
+    let r = RemoteRef::parse("git@github.com:alonso/codesprout.git").unwrap();
+    assert_eq!((r.provider, r.path.as_str()), (Provider::GitHub, "alonso/codesprout"));
+    assert_eq!(r.new_pr_url("feature/x", "main"), "https://github.com/alonso/codesprout/compare/main...feature%2Fx?expand=1");
     let r = RemoteRef::parse("https://gitlab.com/grupo/sub/proyecto.git").unwrap();
     assert_eq!((r.provider, r.path.as_str()), (Provider::GitLab, "grupo/sub/proyecto"));
     let r = RemoteRef::parse("https://dev.azure.com/org/proj/_git/repo").unwrap();

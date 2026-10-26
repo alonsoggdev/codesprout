@@ -1,7 +1,7 @@
 //! Secondary views: reflog, file history, blame, compare, pull requests, submodules,
 //! worktrees and Git LFS.
 
-use ds_core::extras::{self, SubmoduleState};
+use codesprout_core::extras::{self, SubmoduleState};
 use eframe::egui::{self, vec2, Align, Layout, RichText, Sense};
 
 use super::{view_header, Defer};

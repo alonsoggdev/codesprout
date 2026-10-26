@@ -38,6 +38,10 @@ impl Bus {
         });
     }
 
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
+    }
+
     pub fn drain(&self) -> Vec<Apply> {
         self.rx.try_iter().collect()
     }

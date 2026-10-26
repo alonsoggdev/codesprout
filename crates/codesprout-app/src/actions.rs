@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use ds_core::extras;
-use ds_core::history;
-use ds_core::hosting::{self, RemoteRef};
-use ds_core::repo::{self as git, CommitFlags, PushArgs};
-use ds_core::{DiffOptions, FileChange, OpHandle, OpResult, RepoState, ResetMode};
+use codesprout_core::extras;
+use codesprout_core::history;
+use codesprout_core::hosting::{self, RemoteRef};
+use codesprout_core::repo::{self as git, CommitFlags, PushArgs};
+use codesprout_core::{DiffOptions, FileChange, OpHandle, OpResult, RepoState, ResetMode};
 
 use crate::app::{App, Progress, ToastKind};
 use crate::dialogs::Dialog;

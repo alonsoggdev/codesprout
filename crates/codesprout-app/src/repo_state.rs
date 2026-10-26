@@ -5,13 +5,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ds_core::diff::{self, ConflictPart, FileDiff, LineKind};
-use ds_core::explorer::Layout;
-use ds_core::extras::{LfsInfo, Submodule, Worktree};
-use ds_core::flow::FlowConfig;
-use ds_core::history::{Blame, FileRevision, ReflogEntry, SearchMode};
-use ds_core::hosting::{PullRequest, RemoteRef};
-use ds_core::{Commit, CommitDetails, FileChange, Refs, Status};
+use codesprout_core::diff::{self, ConflictPart, FileDiff, LineKind};
+use codesprout_core::explorer::Layout;
+use codesprout_core::extras::{LfsInfo, Submodule, Worktree};
+use codesprout_core::flow::FlowConfig;
+use codesprout_core::history::{Blame, FileRevision, ReflogEntry, SearchMode};
+use codesprout_core::hosting::{PullRequest, RemoteRef};
+use codesprout_core::{Commit, CommitDetails, FileChange, Refs, Status};
 use eframe::egui;
 
 pub const WORKTREE: &str = "WORKTREE";
@@ -326,7 +326,7 @@ pub struct RepoTab {
     pub submodules: Option<Vec<Submodule>>,
     pub worktrees: Option<Vec<Worktree>>,
     pub lfs: Option<LfsInfo>,
-    pub lfs_locks: Option<Vec<ds_core::extras::LfsLock>>,
+    pub lfs_locks: Option<Vec<codesprout_core::extras::LfsLock>>,
     pub flow: Option<FlowConfig>,
     pub last_fetch: Instant,
     pub template: Option<String>,

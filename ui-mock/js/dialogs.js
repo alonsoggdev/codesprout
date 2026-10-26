@@ -1,4 +1,4 @@
-// Modal dialogs. Mirrors crates/ds-app/src/dialogs.rs: same titles, fields, texts and buttons.
+// Modal dialogs. Mirrors crates/codesprout-app/src/dialogs.rs: same titles, fields, texts and buttons.
 'use strict';
 
 const Dialogs = (() => {
@@ -184,7 +184,7 @@ const Dialogs = (() => {
       const list = S.accounts.length
         ? S.accounts.map((a, i) => `<div style="background:var(--panel2);border-radius:6px;padding:8px;display:flex;align-items:center;gap:8px"><span style="color:var(--accent)">${icon('user', 16)}</span><b>${esc(a.username)}</b><span class="muted">${a.provider} · ${a.host}</span><button class="btn" style="margin-left:auto" data-logout="${i}">Cerrar sesión</button></div>`).join('')
         : '<div class="muted">Todavía no has iniciado sesión en ninguna plataforma.</div>';
-      return `<h2>Cuentas</h2><div>Inicia sesión una vez y Destiny Stone (y Git) usarán esa sesión para clonar, hacer push y gestionar pull requests. El inicio de sesión se hace en el navegador, con el SSO de tu organización si lo tiene.</div>
+      return `<h2>Cuentas</h2><div>Inicia sesión una vez y CodeSprout (y Git) usarán esa sesión para clonar, hacer push y gestionar pull requests. El inicio de sesión se hace en el navegador, con el SSO de tu organización si lo tiene.</div>
         <div class="small">Git Credential Manager 2.5.0</div>${list}<div style="height:1px;background:var(--border);margin:4px 0"></div><b>Iniciar sesión</b>
         <div style="display:flex;gap:4px">${providers.map(([p], i) => `<button class="seg${i === pv ? ' on' : ''}" data-pv="${i}">${p}</button>`).join('')}</div>
         <div style="display:flex;gap:8px;align-items:center"><span class="small">Servidor</span><input type="text" id="host" value="${providers[pv][1]}" style="width:240px"></div>
@@ -217,7 +217,7 @@ const Dialogs = (() => {
       <div class="cols"><div>${field('Tema', `<select id="theme"><option value="dark" ${s.theme === 'dark' ? 'selected' : ''}>Oscuro</option><option value="light" ${s.theme === 'light' ? 'selected' : ''}>Claro</option><option value="system">Según el sistema</option></select>`)}</div>
       <div>${field('Fetch automático', select('af', ['Desactivado', 'Cada 5 minutos', 'Cada 10 minutos', 'Cada 15 minutos', 'Cada 30 minutos'], 'Desactivado'))}</div></div>
       ${field('Commits a cargar en el historial (100 – 1.000.000)', text('max', String(s.maxCommits)).replace('<input', '<input style="width:140px"'))}
-      ${check('chrono', 'Explorador de ramas cronológico (una columna por commit)', s.chronological)}${check('word', 'Resaltar las palabras cambiadas dentro de cada línea', s.wordDiff)}${check('signc', 'Firmar los commits por defecto (GPG/SSH)')}
+      ${check('chrono', 'Explorador de ramas cronológico (una columna por commit)', s.chronological)}${check('word', 'Resaltar las palabras cambiadas dentro de cada línea', s.wordDiff)}${check('signc', 'Firmar los commits por defecto (GPG/SSH)')}${check('upd', 'Buscar actualizaciones de CodeSprout automáticamente', true)}
       <div style="height:1px;background:var(--border);margin:4px 0"></div><b>Repositorio · ${esc(S.repo.name)}</b>
       <div class="cols"><div>${field('Nombre del autor', text('an', 'Ana', 'Tu nombre'))}</div><div>${field('Email', text('ae', 'ana@x.com', 'tu@email.com'))}</div></div>
       ${check('glob', 'Guardar la identidad para todos los repositorios (global)', true)}
@@ -238,6 +238,36 @@ const Dialogs = (() => {
       App.render();
       App.toast('Ajustes guardados');
     });
+  }
+
+  // updater.rs › update_body
+  function update() {
+    const u = S.update;
+    if (!u) return;
+    const d = open(560, `<div style="display:flex;align-items:center;gap:8px;color:var(--green)">${icon('pull', 18)}<h2 style="margin:0;color:var(--text)">CodeSprout ${esc(u.version)}</h2></div>
+      <div>Hay una versión nueva disponible. Tienes la ${esc(VERSION)}.</div>
+      ${u.notes ? `<b>Novedades</b><div class="update-notes">${esc(u.notes)}</div>` : ''}
+      <div id="up-progress"></div>
+      <div class="actions"><button class="btn" data-x="page" style="background:none;border:none;color:var(--accent)">Ver en GitHub</button><button class="btn" data-x="cancel">Más tarde</button><button class="btn primary" data-x="ok">Actualizar y reiniciar</button></div>`);
+    d.querySelector('[data-x="cancel"]').onclick = close;
+    d.querySelector('[data-x="page"]').onclick = () => App.toast('En la app real abre la página de la versión en GitHub.', 'info');
+    d.querySelector('[data-x="ok"]').onclick = () => {
+      d.querySelectorAll('[data-x="ok"], [data-x="cancel"]').forEach((b) => { b.disabled = true; });
+      const total = 10.4, bar = d.querySelector('#up-progress');
+      let done = 0;
+      const t = setInterval(() => {
+        if (!document.body.contains(d)) return clearInterval(t);
+        done = Math.min(total, done + 0.8);
+        bar.innerHTML = `<div class="update-progress"><div style="width:${(done / total) * 100}%"></div><span>Descargando… ${done.toFixed(1).replace('.', ',')} / ${String(total).replace('.', ',')} MB</span></div>`;
+        if (done >= total) {
+          clearInterval(t);
+          close();
+          S.update = null;
+          App.render();
+          App.toast('En la app real se cierra y se abre la nueva versión.', 'info');
+        }
+      }, 120);
+    };
   }
 
   // dialogs.rs › InteractiveRebase
@@ -308,5 +338,5 @@ const Dialogs = (() => {
     });
   }
 
-  return { open, close, error, confirm, progress, newBranch, merge, stash, discardAll, pull, push, tag, addRemote, checkoutRemote, reset, accounts, settings, interactiveRebase, flowInit, createPr, clone };
+  return { open, close, error, confirm, progress, update, newBranch, merge, stash, discardAll, pull, push, tag, addRemote, checkoutRemote, reset, accounts, settings, interactiveRebase, flowInit, createPr, clone };
 })();

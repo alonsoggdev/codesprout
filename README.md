@@ -1,4 +1,4 @@
-# Destiny Stone
+# CodeSprout
 
 Cliente Git de escritorio escrito en Rust, con interfaz nativa acelerada por GPU (egui). Su pieza central es un explorador de ramas al estilo Plastic SCM: cada rama es un carril horizontal, el tiempo avanza de izquierda a derecha y se ve dónde se bifurca y dónde se vuelve a juntar cada rama.
 
@@ -11,10 +11,18 @@ Cliente Git de escritorio escrito en Rust, con interfaz nativa acelerada por GPU
 ## Uso
 
 ```bash
-cargo run -p ds-app --release      # abre la aplicación
-cargo build -p ds-app --release    # genera target/release/destiny-stone(.exe), un único ejecutable de ~10 MB
-cargo test -p ds-core              # tests contra repositorios Git reales
+cargo run -p codesprout-app --release      # abre la aplicación
+cargo build -p codesprout-app --release    # genera target/release/codesprout(.exe), un único ejecutable de ~10 MB
+cargo test -p codesprout-core              # tests contra repositorios Git reales
 ```
+
+## Publicar una versión
+
+La app busca versiones nuevas en las [releases de GitHub](https://github.com/alonsoggdev/gitroot/releases) al arrancar y cada 6 horas (se puede desactivar en Ajustes). Si hay una más nueva, el botón de la versión, arriba a la derecha, se pone verde y la app se actualiza y se reinicia sola.
+
+1. Sube `version` en `Cargo.toml` (por ejemplo, `2.1.0`) y haz commit.
+2. Crea y sube la etiqueta: `git tag v2.1.0 && git push origin main v2.1.0`.
+3. La GitHub Action `.github/workflows/release.yml` compila, pasa los tests y publica la release con `codesprout-windows-x64.exe`, su `.sha256` y un zip. Las novedades se generan a partir de los commits; puedes editarlas en GitHub y la app las muestra.
 
 ## Funciones
 
@@ -55,7 +63,7 @@ cargo test -p ds-core              # tests contra repositorios Git reales
 ## Estructura
 
 ```
-crates/ds-core/           motor Git (sin interfaz)
+crates/codesprout-core/   motor Git (sin interfaz)
   src/runner.rs           ejecuta git sin shell, con cancelación, progreso y ayudante de credenciales
   src/repo.rs             estado, refs, log, diffs y todas las operaciones básicas
   src/diff.rs             parseo de diffs, parches parciales, resaltado por palabras, conflictos
@@ -67,7 +75,7 @@ crates/ds-core/           motor Git (sin interfaz)
   src/credentials.rs      inicio de sesión con Git Credential Manager
   src/hosting.rs          APIs de GitHub, GitLab y Bitbucket
   tests/git.rs            tests de integración contra repositorios reales
-crates/ds-app/            aplicación de escritorio (egui)
+crates/codesprout-app/    aplicación de escritorio (egui)
   src/app.rs              estado, pestañas, barra de herramientas, refresco, vigilancia de archivos
   src/actions.rs          operaciones lanzadas desde la interfaz
   src/dialogs.rs          diálogos

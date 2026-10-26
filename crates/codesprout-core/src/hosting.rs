@@ -97,7 +97,7 @@ pub fn encode(s: &str) -> String {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).user_agent("DestinyStone/2.0").build()
+    ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).user_agent(concat!("CodeSprout/", env!("CARGO_PKG_VERSION"))).build()
 }
 
 struct Api {

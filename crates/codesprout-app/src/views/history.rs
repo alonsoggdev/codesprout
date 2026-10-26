@@ -1,7 +1,7 @@
 //! History view: branch explorer (or list), search, and the commit detail panel.
 
-use ds_core::history::SearchMode;
-use ds_core::{Commit, FileChange, RemoteBranch};
+use codesprout_core::history::SearchMode;
+use codesprout_core::{Commit, FileChange, RemoteBranch};
 use eframe::egui::{self, vec2, Align, Layout, RichText};
 
 use super::Defer;
@@ -580,7 +580,7 @@ pub fn commit_menu(ui: &mut egui::Ui, c: &Commit, defer: &mut Defer) {
     act!("Guardar como parche…", |a: &mut App, h: String, _| {
         if let Some(dir) = crate::actions::pick_folder("Carpeta donde guardar el parche") {
             if let Some(p) = a.active_path() {
-                a.op("Crear parche", move || ds_core::extras::create_patches(&p, &[h], &dir), |a, files| {
+                a.op("Crear parche", move || codesprout_core::extras::create_patches(&p, &[h], &dir), |a, files| {
                     a.ok(format!("Parche guardado: {}", files.first().map(|f| f.display().to_string()).unwrap_or_default()))
                 });
             }
@@ -589,7 +589,7 @@ pub fn commit_menu(ui: &mut egui::Ui, c: &Commit, defer: &mut Defer) {
     act!("Exportar como archivo (zip)…", |a: &mut App, h: String, _| {
         if let Some(file) = rfd::FileDialog::new().set_file_name(format!("{}.zip", &h[..8])).add_filter("Zip", &["zip"]).add_filter("Tar", &["tar", "tar.gz"]).save_file() {
             if let Some(p) = a.active_path() {
-                a.op("Exportar", move || ds_core::extras::archive(&p, &h, &file), |a, _| a.ok("Archivo exportado"));
+                a.op("Exportar", move || codesprout_core::extras::archive(&p, &h, &file), |a, _| a.ok("Archivo exportado"));
             }
         }
     });

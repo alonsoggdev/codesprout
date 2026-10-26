@@ -285,3 +285,14 @@ label.check input:checked::after { content: ""; width: 8px; height: 4px; border:
 #mockbar { position: fixed; left: 50%; top: 5px; transform: translateX(-50%); z-index: 90; background: #000c; color: #fff; border-radius: 8px; padding: 6px 8px; font: 12px var(--font); display: flex; gap: 6px; align-items: center; opacity: 0.35; transition: opacity 0.15s; }
 #mockbar:hover { opacity: 1; }
 #mockbar button, #mockbar select { background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+
+/* updater.rs › update_button */
+#tabbar .right { display: flex; align-items: center; gap: 6px; }
+.update-btn { height: 26px; padding: 0 10px 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; background: var(--green); border: none; color: #fff; cursor: pointer; font-size: 12.5px; }
+.update-btn:hover { filter: brightness(0.88); }
+.version-btn { height: 26px; padding: 0 8px; border-radius: 6px; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12.5px; }
+.version-btn:hover { background: var(--hover); color: var(--text2); }
+.update-notes { background: var(--bg); border-radius: 6px; padding: 8px; max-height: 240px; overflow: auto; color: var(--text2); white-space: pre-wrap; }
+.update-progress { position: relative; height: 20px; border-radius: 4px; background: var(--panel2); overflow: hidden; font-size: 12px; }
+.update-progress > div { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.update-progress > span { position: relative; display: block; text-align: center; line-height: 20px; color: var(--text); }

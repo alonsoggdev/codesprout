@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use ds_core::credentials::Account;
+use codesprout_core::credentials::Account;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -74,6 +74,7 @@ pub struct Settings {
     pub sign_commits: bool,
     pub window: Option<[f32; 4]>,
     pub maximized: bool,
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -100,6 +101,7 @@ impl Default for Settings {
             sign_commits: false,
             window: None,
             maximized: false,
+            check_updates: true,
         }
     }
 }
@@ -121,7 +123,14 @@ pub struct Store {
 }
 
 fn file() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("DestinyStone").join("state.json"))
+    let base = dirs::config_dir()?;
+    let dir = base.join("CodeSprout");
+    // the app used to be called Destiny Stone: keep its settings and repositories
+    let legacy = base.join("DestinyStone");
+    if !dir.exists() && legacy.is_dir() {
+        let _ = std::fs::rename(&legacy, &dir);
+    }
+    Some(dir.join("state.json"))
 }
 
 impl Store {

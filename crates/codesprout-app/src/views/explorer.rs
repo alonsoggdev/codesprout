@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use ds_core::explorer::{EdgeKind, LaneKind, Layout};
+use codesprout_core::explorer::{EdgeKind, LaneKind, Layout};
 use eframe::egui::{self, epaint::CubicBezierShape, pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Shape, Stroke};
 
 use super::Defer;
@@ -439,7 +439,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         let text_x = (geo.origin.x + V_PAD_X + layout.rows as f32 * geo.lane + 6.0).max(rect.min.x + 8.0);
         let right = rect.max.x - 10.0;
         let wide = right - text_x > 620.0;
-        let tips: std::collections::HashMap<usize, &ds_core::explorer::Lane> =
+        let tips: std::collections::HashMap<usize, &codesprout_core::explorer::Lane> =
             layout.lanes.iter().filter(|l| l.kind == LaneKind::Inferred).map(|l| (l.tip, l)).collect();
         for (&col, &i) in t.explorer.by_col.iter().filter(|(col, _)| visible(**col)) {
             let y = geo.pos(col, 0).y;
@@ -576,7 +576,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     });
 }
 
-fn lane_label(lane: &ds_core::explorer::Lane) -> String {
+fn lane_label(lane: &codesprout_core::explorer::Lane) -> String {
     let mut text = lane.name.clone();
     match lane.kind {
         LaneKind::Inferred => text.push_str(" (eliminada)"),

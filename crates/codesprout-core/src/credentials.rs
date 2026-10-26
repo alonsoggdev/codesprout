@@ -127,7 +127,7 @@ pub fn stored(host: &str) -> Option<Credential> {
         .with_env("GCM_INTERACTIVE", "never")
         .with_env("GIT_ASKPASS", "")
         .with_env("SSH_ASKPASS", "")
-        .with_env("DESTINY_STONE_ASKPASS", "");
+        .with_env("CODESPROUT_ASKPASS", "");
     let r = run(&home(), &["credential", "fill"], &opts).ok()?;
     if !r.ok() {
         return None;

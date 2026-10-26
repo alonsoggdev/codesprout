@@ -160,7 +160,7 @@ pub fn run(cwd: &Path, args: &[&str], opts: &Opts) -> Result<Output> {
         cmd.env("GIT_ASKPASS", &askpass)
             .env("SSH_ASKPASS", &askpass)
             .env("SSH_ASKPASS_REQUIRE", "force")
-            .env("DESTINY_STONE_ASKPASS", "1");
+            .env("CODESPROUT_ASKPASS", "1");
     }
     for (k, v) in &opts.env {
         cmd.env(k, v);

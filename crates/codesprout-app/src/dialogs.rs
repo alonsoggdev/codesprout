@@ -3,12 +3,12 @@
 
 use std::path::PathBuf;
 
-use ds_core::credentials::{self, Provider};
-use ds_core::flow::{self, FinishOptions, FlowConfig, FlowKind};
-use ds_core::hosting::{self, HostedRepo, RemoteRef};
-use ds_core::rebase::{self, TodoAction, TodoEntry};
-use ds_core::repo::{self as git, PushArgs};
-use ds_core::{extras, Commit, ResetMode};
+use codesprout_core::credentials::{self, Provider};
+use codesprout_core::flow::{self, FinishOptions, FlowConfig, FlowKind};
+use codesprout_core::hosting::{self, HostedRepo, RemoteRef};
+use codesprout_core::rebase::{self, TodoAction, TodoEntry};
+use codesprout_core::repo::{self as git, PushArgs};
+use codesprout_core::{extras, Commit, ResetMode};
 use eframe::egui::{self, Align, Key, Layout, RichText};
 
 use crate::actions::{find_remote_ref, pick_folder};
@@ -26,6 +26,7 @@ pub struct SettingsState {
     chronological: bool,
     word_diff: bool,
     sign_commits: bool,
+    check_updates: bool,
     name: String,
     email: String,
     global: bool,
@@ -73,6 +74,7 @@ pub enum Dialog {
     LfsTrack { pattern: String, error: Option<String> },
     SubmoduleAdd { url: String, path: String, error: Option<String> },
     WorktreeAdd { path: String, branch: String, new_branch: bool, error: Option<String> },
+    Update { error: Option<String> },
 }
 
 enum Out {
@@ -89,6 +91,9 @@ impl Dialog {
     }
     pub fn identity_needed(msg: &str) -> Self {
         Dialog::IdentityNeeded { msg: msg.into(), name: String::new(), email: String::new(), global: true, error: None }
+    }
+    pub fn update() -> Self {
+        Dialog::Update { error: None }
     }
     pub fn stash() -> Self {
         Dialog::Stash { msg: String::new(), untracked: true, keep_index: false }
@@ -117,6 +122,7 @@ impl Dialog {
             chronological: s.chronological,
             word_diff: s.word_diff,
             sign_commits: s.sign_commits,
+            check_updates: s.check_updates,
             original: (name.clone(), email.clone(), diff_tool.clone(), merge_tool.clone()),
             name,
             email,
@@ -164,7 +170,7 @@ impl App {
         let mut out = Out::Keep;
         let width = match &d {
             Dialog::Settings(_) | Dialog::InteractiveRebase { .. } | Dialog::Clone { .. } => 640.0,
-            Dialog::CreatePr { .. } | Dialog::Output { .. } | Dialog::Accounts { .. } => 560.0,
+            Dialog::CreatePr { .. } | Dialog::Output { .. } | Dialog::Accounts { .. } | Dialog::Update { .. } => 560.0,
             _ => 460.0,
         };
         let c = theme::p();
@@ -174,7 +180,7 @@ impl App {
             out = self.dialog_body(ui, &mut d);
             let _ = c;
         });
-        if esc && !matches!(d, Dialog::Accounts { pending: Some(_), .. }) {
+        if esc && !matches!(d, Dialog::Accounts { pending: Some(_), .. }) && !(matches!(d, Dialog::Update { .. }) && self.update.installing.is_some()) {
             out = Out::Close;
         }
         if let Out::Keep = out {
@@ -1052,6 +1058,11 @@ impl App {
                 return self.accounts_body(ui, host, provider, pending, error, gcm);
             }
             Dialog::Settings(s) => return self.settings_body(ui, s),
+            Dialog::Update { error } => {
+                if self.update_body(ui, error) {
+                    return Out::Close;
+                }
+            }
         }
         Out::Keep
     }
@@ -1062,7 +1073,7 @@ impl App {
         if gcm.is_none() {
             *gcm = Some(credentials::gcm_configured());
         }
-        ui.label("Inicia sesión una vez y Destiny Stone (y Git) usarán esa sesión para clonar, hacer push y gestionar pull requests. El inicio de sesión se hace en el navegador, con el SSO de tu organización si lo tiene.");
+        ui.label("Inicia sesión una vez y CodeSprout (y Git) usarán esa sesión para clonar, hacer push y gestionar pull requests. El inicio de sesión se hace en el navegador, con el SSO de tu organización si lo tiene.");
         match (&self.gcm_version, *gcm) {
             (None, _) => {
                 widgets::info_box(ui, "No se encontró Git Credential Manager. Viene incluido con Git para Windows; en macOS y Linux instálalo desde github.com/git-ecosystem/git-credential-manager.", c.yellow);
@@ -1197,6 +1208,7 @@ impl App {
             check(ui, &mut s.chronological, "Explorador de ramas cronológico (una columna por commit)");
             check(ui, &mut s.word_diff, "Resaltar las palabras cambiadas dentro de cada línea");
             check(ui, &mut s.sign_commits, "Firmar los commits por defecto (GPG/SSH)");
+            check(ui, &mut s.check_updates, "Buscar actualizaciones de CodeSprout automáticamente");
             if let Some(p) = &s.repo {
                 ui.separator();
                 ui.label(RichText::new(format!("Repositorio · {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())).strong());
@@ -1288,6 +1300,7 @@ impl App {
                 st.chronological = s.chronological;
                 st.word_diff = s.word_diff;
                 st.sign_commits = s.sign_commits;
+                st.check_updates = s.check_updates;
                 st.custom_actions = s.actions.iter().filter(|a| !a.name.trim().is_empty() && !a.program.trim().is_empty()).cloned().collect();
                 for t in &mut self.tabs {
                     t.sign = s.sign_commits;

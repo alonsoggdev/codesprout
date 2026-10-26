@@ -1,6 +1,6 @@
 //! Changes view: conflicted / unstaged / staged file lists, commit box and diff.
 
-use ds_core::{FileChange, RepoState};
+use codesprout_core::{FileChange, RepoState};
 use eframe::egui::{self, vec2, Align, Key, Layout, RichText, Sense};
 
 use super::Defer;

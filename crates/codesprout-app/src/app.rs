@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ds_core::explorer::{self, ColumnMode};
-use ds_core::{repo as git, OpHandle, RepoState};
+use codesprout_core::explorer::{self, ColumnMode};
+use codesprout_core::{repo as git, OpHandle, RepoState};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Stroke};
 
 use crate::bus::{Bus, BusSender};
@@ -60,6 +60,7 @@ pub struct App {
     was_focused: bool,
     applied_dark: Option<bool>,
     pub focus_search: bool,
+    pub update: crate::updater::UpdateState,
 }
 
 impl App {
@@ -86,6 +87,7 @@ impl App {
             was_focused: true,
             applied_dark: None,
             focus_search: false,
+            update: Default::default(),
         };
         let tabs = app.store.tabs.clone();
         for t in &tabs {
@@ -94,7 +96,7 @@ impl App {
         let active = app.store.active.clone();
         app.active = active.and_then(|a| app.tabs.iter().position(|t| t.key == a));
         app.bus.spawn(
-            || (git::version(), ds_core::credentials::gcm_version(), ds_core::extras::lfs_version()),
+            || (git::version(), codesprout_core::credentials::gcm_version(), codesprout_core::extras::lfs_version()),
             |app, (v, gcm, lfs)| {
                 app.gcm_version = gcm;
                 app.lfs_version = lfs;
@@ -260,7 +262,7 @@ impl App {
             let Ok(ev) = res else { return };
             let relevant = ev.paths.iter().any(|p| {
                 let s = p.to_string_lossy().replace('\\', "/");
-                !(s.contains("/.git/objects") || s.contains("/.git/logs") || s.ends_with(".lock") || s.contains("/.git/destiny-stone"))
+                !(s.contains("/.git/objects") || s.contains("/.git/logs") || s.ends_with(".lock") || s.contains("/.git/codesprout"))
             });
             if relevant && !flag.swap(true, Ordering::SeqCst) {
                 let k = k.clone();
@@ -323,8 +325,8 @@ impl App {
                 let wt = status.change_count() > 0;
                 let layout =
                     if reload || wt != had_worktree { Some(Arc::new(explorer::layout(&commits, &refs, wt, mode))) } else { None };
-                let flow = ds_core::flow::config(&path);
-                let template = if need_template { ds_core::extras::commit_template(&path) } else { None };
+                let flow = codesprout_core::flow::config(&path);
+                let template = if need_template { codesprout_core::extras::commit_template(&path) } else { None };
                 Ok((status, refs, reload.then_some(commits), layout, flow, template))
             },
             move |app, r| app.apply_refresh(&key, r),
@@ -336,11 +338,11 @@ impl App {
         &mut self,
         key: &str,
         r: anyhow::Result<(
-            ds_core::Status,
-            ds_core::Refs,
-            Option<Arc<Vec<ds_core::Commit>>>,
+            codesprout_core::Status,
+            codesprout_core::Refs,
+            Option<Arc<Vec<codesprout_core::Commit>>>,
             Option<Arc<explorer::Layout>>,
-            Option<ds_core::flow::FlowConfig>,
+            Option<codesprout_core::flow::FlowConfig>,
             Option<String>,
         )>,
     ) {
@@ -656,6 +658,8 @@ impl App {
                     if widgets::icon_text_button(ui, Icon::User, &label, true).clicked() {
                         self.dialogs.push(Dialog::accounts());
                     }
+                    ui.add_space(6.0);
+                    self.update_button(ui);
                 });
                 if let Some(i) = close {
                     self.close_tab(i);
@@ -993,6 +997,7 @@ impl eframe::App for App {
         }
         self.apply_theme(ctx);
         self.tick(ctx);
+        self.update_tick(ctx);
         self.handle_shortcuts(ctx);
         self.tab_bar(ctx);
         if self.active.is_some() {

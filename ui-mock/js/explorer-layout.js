@@ -1,4 +1,4 @@
-// Branch explorer layout. Line-by-line port of crates/ds-core/src/explorer.rs (fn layout):
+// Branch explorer layout. Line-by-line port of crates/codesprout-core/src/explorer.rs (fn layout):
 // lanes from first-parent walks in priority order, inferred lanes for deleted branches named
 // from merge messages, compact / chronological columns, rows packed under the parent lane.
 // If the algorithm changes in Rust, change it here too (and the other way round).

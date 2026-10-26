@@ -688,6 +688,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "codesprout-app"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codesprout-core",
+ "dirs",
+ "eframe",
+ "image",
+ "notify",
+ "open",
+ "rfd",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "codesprout-core"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tempfile",
+ "trash",
+ "ureq",
+]
+
+[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,36 +918,6 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
-
-[[package]]
-name = "ds-app"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "ds-core",
- "eframe",
- "image",
- "notify",
- "open",
- "rfd",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ds-core"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "similar",
- "tempfile",
- "trash",
- "ureq",
-]
 
 [[package]]
 name = "ecolor"
@@ -2911,7 +2912,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3067,6 +3068,17 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures",

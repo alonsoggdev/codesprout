@@ -1,5 +1,5 @@
 // App shell: state, tab bar, toolbar, banner, sidebar, status bar, toasts, menus and the
-// simulated git actions. Mirrors crates/ds-app/src/app.rs, actions.rs and views/sidebar.rs.
+// simulated git actions. Mirrors crates/codesprout-app/src/app.rs, actions.rs and views/sidebar.rs.
 'use strict';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -55,6 +55,7 @@ const App = (() => {
     message: '', amend: false, pushAfter: false, sign: false,
     busy: null,
     accounts: [],
+    update: null,
     diffSel: new Set(),
   };
 
@@ -67,6 +68,7 @@ const App = (() => {
     S.diffs = clone(MOCK_DIFFS);
     S.untracked = clone(MOCK_UNTRACKED);
     S.accounts = clone(MOCK_ACCOUNTS);
+    S.update = null;
     S.selected = S.refs.head;
     recompute();
   }
@@ -285,7 +287,7 @@ const App = (() => {
         <span class="x" data-act="close-tab">${icon('close', 8)}</span>
       </div>
       <div class="tab-home${active ? '' : ' active'}" data-act="home" title="Repositorios (Ctrl+T)">${icon('plus', 14)}</div>
-      <div class="right"><button class="icon-text-btn" data-act="accounts">${icon('user', 14)}${S.accounts.length ? plural(S.accounts.length, 'cuenta', 'cuentas') : 'Iniciar sesión'}</button></div>`;
+      <div class="right">${S.update ? `<button class="update-btn" data-act="update" title="Tienes la ${VERSION}">${icon('pull', 14)}Actualizar a ${S.update.version}</button>` : `<button class="version-btn" data-act="check-update" title="Buscar actualizaciones">v${VERSION}</button>`}<button class="icon-text-btn" data-act="accounts">${icon('user', 14)}${S.accounts.length ? plural(S.accounts.length, 'cuenta', 'cuentas') : 'Iniciar sesión'}</button></div>`;
   }
 
   // ---------------------------------------------------------------- render: toolbar (app.rs › toolbar)
@@ -439,6 +441,8 @@ const App = (() => {
       case 'create-pr': Dialogs.createPr(); break;
       case 'settings': Dialogs.settings(); break;
       case 'accounts': Dialogs.accounts(); break;
+      case 'update': Dialogs.update(); break;
+      case 'check-update': S.update ? Dialogs.update() : toast(`Ya tienes la última versión (${VERSION})`); break;
       case 'refresh': recompute(); render(); break;
       case 'abort': Dialogs.confirm('Abortar operación', 'Se descartará la operación en curso y el repositorio volverá al estado anterior.', null, 'Abortar', true, () => op('Abortar', () => { S.status.state = null; S.status.conflicted = []; }, 'Operación abortada')); break;
       case 'continue': op('Continuar', () => { S.status.state = null; }, 'Operación completada'); break;
@@ -507,6 +511,7 @@ const App = (() => {
       S.sel = { list: null, paths: new Set(), focus: null, anchor: null };
       recompute(); S.view = 'changes'; render();
     }
+    if (k === 'update') { S.update = S.update ? null : clone(MOCK_UPDATE); if (S.update) toast(`CodeSprout ${S.update.version} está disponible. Pulsa «Actualizar» arriba a la derecha.`, 'info'); render(); }
     if (k === 'reset') { loadData(); render(); }
   }
   function mockSize(e) {
@@ -552,7 +557,7 @@ const App = (() => {
     if (q.get('view')) S.view = q.get('view');
     recompute();
     render();
-    const dialogs = { accounts: () => Dialogs.accounts(), settings: () => Dialogs.settings(), rebase: () => { S.status = { state: null, staged: [], unstaged: [], conflicted: [] }; recompute(); render(); Dialogs.interactiveRebase(S.commits[10].hash); }, newbranch: () => Dialogs.newBranch(null), push: () => Dialogs.push(), clone: () => Dialogs.clone(), pr: () => Dialogs.createPr() };
+    const dialogs = { update: () => { S.update = clone(MOCK_UPDATE); render(); Dialogs.update(); }, accounts: () => Dialogs.accounts(), settings: () => Dialogs.settings(), rebase: () => { S.status = { state: null, staged: [], unstaged: [], conflicted: [] }; recompute(); render(); Dialogs.interactiveRebase(S.commits[10].hash); }, newbranch: () => Dialogs.newBranch(null), push: () => Dialogs.push(), clone: () => Dialogs.clone(), pr: () => Dialogs.createPr() };
     if (dialogs[q.get('dialog')]) dialogs[q.get('dialog')]();
   }
 

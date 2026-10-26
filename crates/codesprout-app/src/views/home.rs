@@ -28,7 +28,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         let w = ui.available_width();
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(vec2((w * 0.36).clamp(280.0, 420.0), ui.available_height()), Layout::top_down(Align::Min), |ui| {
-                ui.label(RichText::new("Destiny Stone").size(30.0).strong());
+                ui.label(RichText::new("CodeSprout").size(30.0).strong());
                 ui.label(RichText::new("Tu cliente Git: explorador de ramas, preparación por líneas, rebase interactivo, git-flow y pull requests.").color(c.text2));
                 ui.add_space(18.0);
                 if card(ui, Icon::Fetch, "Clonar repositorio", "Desde una URL o tus repos de GitHub/GitLab/Bitbucket") {
@@ -118,12 +118,12 @@ fn create_new(app: &mut App) {
     let Some(dir) = pick_folder("Selecciona o crea la carpeta del nuevo repositorio") else { return };
     app.bus.spawn(
         move || -> anyhow::Result<(std::path::PathBuf, bool)> {
-            if let Ok(existing) = ds_core::repo::resolve_repo(&dir) {
+            if let Ok(existing) = codesprout_core::repo::resolve_repo(&dir) {
                 if crate::app::same_path(&existing.to_string_lossy(), &dir.to_string_lossy()) {
                     return Ok((existing, false));
                 }
             }
-            Ok((ds_core::repo::init(&dir)?, true))
+            Ok((codesprout_core::repo::init(&dir)?, true))
         },
         |app, r| match r {
             Ok((p, created)) => {

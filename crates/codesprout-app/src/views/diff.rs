@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use ds_core::diff::{build_patch, ConflictPart, LineKind};
+use codesprout_core::diff::{build_patch, ConflictPart, LineKind};
 use eframe::egui::{self, pos2, text::LayoutJob, vec2, Align, Align2, Color32, FontId, Layout, Rect, RichText, Sense, Stroke, TextFormat};
 
 use super::Defer;

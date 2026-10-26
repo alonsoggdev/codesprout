@@ -102,7 +102,7 @@ pub fn run(repo: &Path, base: Option<&str>, entries: &[TodoEntry]) -> Result<OpR
     if entries.is_empty() {
         bail!("No hay commits que reescribir.");
     }
-    let dir = git_dir(repo)?.join("destiny-stone");
+    let dir = git_dir(repo)?.join("codesprout");
     std::fs::create_dir_all(&dir)?;
     let (todo, msgs) = build_todo(entries, &dir)?;
     for (f, m) in &msgs {

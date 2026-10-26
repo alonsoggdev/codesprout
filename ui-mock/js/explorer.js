@@ -1,4 +1,4 @@
-// Branch explorer canvas. Port of crates/ds-app/src/views/explorer.rs: same constants,
+// Branch explorer canvas. Port of crates/codesprout-app/src/views/explorer.rs: same constants,
 // same drawing order (row highlights, bands, edges, nodes, badges, lane names, row text),
 // same interaction (drag, wheel, Ctrl+wheel zoom, click, Ctrl+click, double click, menu).
 (function () {

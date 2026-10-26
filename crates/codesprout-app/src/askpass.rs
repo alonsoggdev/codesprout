@@ -16,7 +16,7 @@ struct Prompt {
 impl eframe::App for Prompt {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::p().panel).inner_margin(18)).show(ctx, |ui| {
-            ui.label(egui::RichText::new("Destiny Stone · Git necesita una credencial").strong());
+            ui.label(egui::RichText::new("CodeSprout · Git necesita una credencial").strong());
             ui.add_space(4.0);
             ui.label(&self.prompt);
             ui.add_space(6.0);
@@ -48,12 +48,12 @@ pub fn run(prompt: String) -> i32 {
     let answer = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let out = answer.clone();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 190.0]).with_resizable(false).with_always_on_top().with_title("Destiny Stone"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([440.0, 190.0]).with_resizable(false).with_always_on_top().with_title("CodeSprout"),
         centered: true,
         ..Default::default()
     };
     let _ = eframe::run_native(
-        "Destiny Stone · credencial",
+        "CodeSprout · credencial",
         options,
         Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);

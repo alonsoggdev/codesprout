@@ -1,17 +1,17 @@
 ﻿[package]
-name = "ds-app"
-description = "Destiny Stone: cliente Git de escritorio"
+name = "codesprout-app"
+description = "CodeSprout: cliente Git de escritorio"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "destiny-stone"
+name = "codesprout"
 path = "src/main.rs"
 
 [dependencies]
-ds-core = { path = "../ds-core" }
+codesprout-core = { path = "../codesprout-core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

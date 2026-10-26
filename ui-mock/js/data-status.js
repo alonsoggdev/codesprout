@@ -41,7 +41,7 @@ window.MOCK_DIFFS = {
  ## Instalación
 
 -Descarga el instalador y ejecútalo.
-+Descarga el zip, descomprímelo y ejecuta destiny-stone.exe.
++Descarga el zip, descomprímelo y ejecuta codesprout.exe.
  Necesitas Git 2.26 o superior.
 
  ## Primeros pasos
@@ -59,3 +59,10 @@ window.MOCK_UNTRACKED = {
 };
 
 window.MOCK_ACCOUNTS = [];
+
+// Version of the app (Cargo.toml) and the release that «Simular actualización» offers (updater.rs)
+window.VERSION = '2.0.0';
+window.MOCK_UPDATE = {
+  version: '2.1.0',
+  notes: '## Novedades\n- Botón para actualizar la app desde la barra de pestañas\n- Nuevo nombre: CodeSprout\n\n**Full Changelog**: v2.0.0...v2.1.0',
+};

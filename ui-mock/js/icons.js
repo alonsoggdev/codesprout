@@ -1,4 +1,4 @@
-// Vector icons. Port of crates/ds-app/src/icons.rs: same 16x16 grid, same shapes, stroke 1.5.
+// Vector icons. Port of crates/codesprout-app/src/icons.rs: same 16x16 grid, same shapes, stroke 1.5.
 // To add or change an icon, edit it here, then translate the shapes to icons.rs
 // (line -> line(), poly -> poly(), circle -> circle_stroke(), dot -> circle_filled(),
 //  bez -> bezier(), arc -> arc(), rect -> rect_stroke()).
