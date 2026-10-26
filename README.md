@@ -22,7 +22,7 @@ La app busca versiones nuevas en las [releases de GitHub](https://github.com/alo
 
 1. Sube `version` en `Cargo.toml` (por ejemplo, `2.1.0`) y haz commit.
 2. Crea y sube la etiqueta: `git tag v2.1.0 && git push origin main v2.1.0`.
-3. La GitHub Action `.github/workflows/release.yml` compila, pasa los tests y publica la release con `codesprout-windows-x64.exe`, su `.sha256` y un zip. Las novedades se generan a partir de los commits; puedes editarlas en GitHub y la app las muestra.
+3. La GitHub Action `.github/workflows/release.yml` compila, pasa los tests y publica la release con `codesprout-windows-x64.exe` y su `.sha256` (los usa el actualizador) y el instalador `CodeSprout-Setup-windows-x64.exe` (Inno Setup, script en `installer/codesprout.iss`; instala por usuario, sin permisos de administrador, para que la app pueda actualizarse sola). Las novedades se generan a partir de los commits; puedes editarlas en GitHub y la app las muestra.
 
 ## Funciones
 

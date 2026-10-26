@@ -41,8 +41,16 @@ jobs:
           mkdir dist
           cp target/release/codesprout.exe dist/codesprout-windows-x64.exe
           (cd dist && sha256sum codesprout-windows-x64.exe > codesprout-windows-x64.exe.sha256)
-          cp target/release/codesprout.exe codesprout.exe
-          7z a "dist/CodeSprout-$version-windows-x64.zip" codesprout.exe README.md
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc "/DAppVersion=$($env:GITHUB_REF_NAME.TrimStart('v'))" installer\codesprout.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: softprops/action-gh-release@v2
         with:

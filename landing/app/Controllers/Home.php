@@ -9,8 +9,8 @@ class Home extends BaseController
     public function index(): string
     {
         return view('landing', [
-            // Same asset the app's updater uses, so it always points to the latest release.
-            'downloadUrl' => self::REPO . '/releases/latest/download/codesprout-windows-x64.exe',
+            // Unversioned asset name, so it always points to the latest release.
+            'downloadUrl' => self::REPO . '/releases/latest/download/CodeSprout-Setup-windows-x64.exe',
             'releasesUrl' => self::REPO . '/releases/latest',
             'repoUrl'     => self::REPO,
         ]);

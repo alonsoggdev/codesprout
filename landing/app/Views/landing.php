@@ -49,6 +49,14 @@
         .feature { padding: 18px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
         .feature h2 { margin: 0 0 6px; font-size: 16px; }
         .feature p { margin: 0; font-size: 14px; color: var(--text2); }
+        .policy {
+            margin-top: 48px; padding: 20px 24px; text-align: left;
+            border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+        }
+        .policy h2 { margin: 0 0 8px; font-size: 18px; }
+        .policy p, .policy li { font-size: 14px; color: var(--text2); }
+        .policy ul { margin: 0; padding-left: 20px; }
+        .policy a { color: var(--accent); }
         footer { padding: 24px 16px; text-align: center; font-size: 13px; color: var(--muted); }
         footer a { color: var(--text2); }
         @media (max-width: 480px) {
@@ -74,8 +82,7 @@
         Descargar para Windows
     </a>
     <p class="meta">
-        Windows 10/11 · 64 bits · Requiere <a href="https://git-scm.com/download/win">Git</a> ·
-        <a href="<?= esc($releasesUrl, 'attr') ?>">Novedades de la versión</a>
+        Windows 10/11 · 64 bits · Requiere <a href="https://git-scm.com/download/win">Git</a> ·        <a href="<?= esc($releasesUrl, 'attr') ?>">Novedades de la versión</a>
     </p>
 
     <!-- Branch explorer motif: one lane per branch, time flows left to right -->
@@ -113,9 +120,36 @@
             <p>Stage por líneas, blame, reflog, cherry-pick, conflictos y rebase interactivo.</p>
         </div>
     </section>
+
+    <!-- Required by the SignPath Foundation terms for free open source code signing -->
+    <section class="policy" id="code-signing-policy">
+        <h2>Política de firma de código (Code signing policy)</h2>
+        <p>
+            Firma de código gratuita proporcionada por <a href="https://about.signpath.io/">SignPath.io</a>,
+            certificado de <a href="https://signpath.org/">SignPath Foundation</a>.
+        </p>
+        <ul>
+            <li>Autores y revisores: <a href="https://github.com/alonsoggdev">Alonso García</a></li>
+            <li>Aprobadores de cada firma: <a href="https://github.com/alonsoggdev">Alonso García</a></li>
+        </ul>
+        <p>
+            Solo se firman los ejecutables compilados automáticamente por GitHub Actions a partir del
+            <a href="<?= esc($repoUrl, 'attr') ?>">código público del repositorio</a>, publicado con licencia MIT.
+        </p>
+        <h2>Privacidad</h2>
+        <p>
+            CodeSprout no envía ningún dato a otros sistemas salvo cuando tú se lo pides: las operaciones
+            de Git contra tus repositorios remotos y, al abrir las pull requests o la lista de repositorios
+            para clonar, las consultas a GitHub, GitLab o Bitbucket con tu propia cuenta.
+            La única excepción es la búsqueda de actualizaciones:
+            al arrancar y cada 6 horas consulta la última versión publicada en GitHub, sin enviar datos
+            personales. Puedes desactivarla en Ajustes.
+        </p>
+    </section>
 </main>
 <footer>
     <a href="<?= esc($repoUrl, 'attr') ?>">Código en GitHub</a> ·
+    <a href="#code-signing-policy">Code signing policy</a> ·
     Sourcetree es una marca de Atlassian; CodeSprout no está afiliado a Atlassian.
 </footer>
 </body>
