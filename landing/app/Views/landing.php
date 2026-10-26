@@ -39,6 +39,7 @@
         }
         .download:hover { transform: translateY(-1px); box-shadow: 0 10px 34px rgba(91, 147, 255, 0.5); }
         .download svg { width: 20px; height: 20px; }
+        .version { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
         .meta { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
         .meta a { color: var(--text2); }
         .lanes { display: block; width: 100%; max-width: 560px; margin: 56px auto 40px; }
@@ -55,7 +56,6 @@
         }
         .policy h2 { margin: 0 0 8px; font-size: 18px; }
         .policy p, .policy li { font-size: 14px; color: var(--text2); }
-        .policy ul { margin: 0; padding-left: 20px; }
         .policy a { color: var(--accent); }
         footer { padding: 24px 16px; text-align: center; font-size: 13px; color: var(--muted); }
         footer a { color: var(--text2); }
@@ -81,6 +81,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></svg>
         Descargar para Windows
     </a>
+    <?php if ($version !== null): ?>
+        <p class="version">Versión <?= esc($version) ?></p>
+    <?php endif ?>
     <p class="meta">
         Windows 10/11 · 64 bits · Requiere <a href="https://git-scm.com/download/win">Git</a> ·        <a href="<?= esc($releasesUrl, 'attr') ?>">Novedades de la versión</a>
     </p>
@@ -121,21 +124,7 @@
         </div>
     </section>
 
-    <!-- Required by the SignPath Foundation terms for free open source code signing -->
-    <section class="policy" id="code-signing-policy">
-        <h2>Política de firma de código (Code signing policy)</h2>
-        <p>
-            Firma de código gratuita proporcionada por <a href="https://about.signpath.io/">SignPath.io</a>,
-            certificado de <a href="https://signpath.org/">SignPath Foundation</a>.
-        </p>
-        <ul>
-            <li>Autores y revisores: <a href="https://github.com/alonsoggdev">Alonso García</a></li>
-            <li>Aprobadores de cada firma: <a href="https://github.com/alonsoggdev">Alonso García</a></li>
-        </ul>
-        <p>
-            Solo se firman los ejecutables compilados automáticamente por GitHub Actions a partir del
-            <a href="<?= esc($repoUrl, 'attr') ?>">código público del repositorio</a>, publicado con licencia MIT.
-        </p>
+    <section class="policy" id="privacidad">
         <h2>Privacidad</h2>
         <p>
             CodeSprout no envía ningún dato a otros sistemas salvo cuando tú se lo pides: las operaciones
@@ -149,7 +138,7 @@
 </main>
 <footer>
     <a href="<?= esc($repoUrl, 'attr') ?>">Código en GitHub</a> ·
-    <a href="#code-signing-policy">Code signing policy</a> ·
+    <a href="#privacidad">Privacidad</a> ·
     Sourcetree es una marca de Atlassian; CodeSprout no está afiliado a Atlassian.
 </footer>
 </body>
