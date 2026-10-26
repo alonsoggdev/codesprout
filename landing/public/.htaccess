@@ -1,6 +1,9 @@
 # Disable directory browsing
 Options -Indexes
 
+# Plesk drops its default index.html into a new document root; serve the app first.
+DirectoryIndex index.php
+
 # ----------------------------------------------------------------------
 # Rewrite engine
 # ----------------------------------------------------------------------
