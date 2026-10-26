@@ -1,0 +1,18 @@
+[package]
+name = "ds-core"
+description = "Motor Git de Destiny Stone: operaciones, parsers, credenciales y disposición del explorador de ramas"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
+trash = "5"
+similar = "2"
+
+[dev-dependencies]
+tempfile = "3"

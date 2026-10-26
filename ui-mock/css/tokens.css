@@ -1,0 +1,104 @@
+/* Design tokens. Mirror of crates/ds-app/src/theme.rs (Palette, fonts, sizes).
+   Any change here must be copied to theme.rs (and vice versa). Alphas: theme.rs uses 0-255. */
+
+:root {
+  --font: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+
+  /* theme.rs › apply(): text_styles */
+  --fs-small: 11px;
+  --fs-body: 13.5px;
+  --fs-button: 13.5px;
+  --fs-heading: 19px;
+  --fs-mono: 12.5px;
+
+  /* theme.rs › apply(): spacing / radii */
+  --gap-x: 8px;
+  --gap-y: 6px;
+  --btn-pad: 4px 10px;
+  --interact-h: 26px;
+  --r-widget: 6px;
+  --r-window: 10px;
+  --r-menu: 8px;
+
+  /* app.rs / views: fixed panel sizes */
+  --tabbar-h: 38px;
+  --toolbar-h: 62px;
+  --status-h: 26px;
+  --sidebar-w: 250px;     /* Settings.sidebar_width (default) */
+  --detail-h: 330px;      /* Settings.detail_height (default) */
+  --changes-w: 380px;     /* Settings.changes_width (default) */
+  --row-h: 26px;          /* sidebar items, list rows */
+  --file-row-h: 24px;
+  --diff-row-h: 19px;
+}
+
+:root, [data-theme="dark"] {
+  --bg: #14161b;
+  --surface: #191c22;
+  --panel: #1e2128;
+  --panel2: #23272f;
+  --hover: #262a33;
+  --active: #2c3240;
+  --border: #2a2e37;
+  --border-strong: #363b46;
+  --text: #e4e7ee;
+  --text2: #b3bac7;
+  --muted: #7e8696;
+  --accent: #5b93ff;
+  --accent-soft: rgba(91, 147, 255, 0.16);
+  --sel: rgba(91, 147, 255, 0.22);
+  --green: #3ccf7e;
+  --green-soft: rgba(60, 207, 126, 0.13);
+  --red: #f26464;
+  --red-soft: rgba(242, 100, 100, 0.13);
+  --yellow: #f2b33d;
+  --yellow-soft: rgba(242, 179, 61, 0.14);
+  --purple: #a984ff;
+  --add-bg: rgba(46, 160, 67, 0.15);
+  --add-hl: rgba(46, 160, 67, 0.35);
+  --del-bg: rgba(248, 81, 73, 0.14);
+  --del-hl: rgba(248, 81, 73, 0.35);
+  --line-sel: rgba(91, 147, 255, 0.35);
+  --merge: #3ccf7e;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.47);
+  --popup-shadow: 0 6px 24px rgba(0, 0, 0, 0.43);
+  --lane-0: #5b93ff; --lane-1: #f2b33d; --lane-2: #a984ff; --lane-3: #4fd1c5; --lane-4: #f27a9e;
+  --lane-5: #9bd15a; --lane-6: #ff9a5c; --lane-7: #6cc4ff; --lane-8: #d98cf2; --lane-9: #e8d44d;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #eef0f4;
+  --surface: #f7f8fa;
+  --panel: #ffffff;
+  --panel2: #f3f4f7;
+  --hover: #eceef3;
+  --active: #e2e7f2;
+  --border: #e1e4ea;
+  --border-strong: #cfd4dd;
+  --text: #1d2129;
+  --text2: #3f4654;
+  --muted: #6f7787;
+  --accent: #2f6fed;
+  --accent-soft: rgba(47, 111, 237, 0.10);
+  --sel: rgba(47, 111, 237, 0.14);
+  --green: #1a9a55;
+  --green-soft: rgba(26, 154, 85, 0.10);
+  --red: #d93c3c;
+  --red-soft: rgba(217, 60, 60, 0.09);
+  --yellow: #b7790f;
+  --yellow-soft: rgba(183, 121, 15, 0.11);
+  --purple: #7c4ddb;
+  --add-bg: rgba(26, 160, 70, 0.10);
+  --add-hl: rgba(26, 160, 70, 0.27);
+  --del-bg: rgba(220, 50, 50, 0.08);
+  --del-hl: rgba(220, 50, 50, 0.25);
+  --line-sel: rgba(47, 111, 237, 0.25);
+  --merge: #1a9a55;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  --popup-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
+  --lane-0: #2f6fed; --lane-1: #c9840c; --lane-2: #7c4ddb; --lane-3: #0f9b8e; --lane-4: #d03f74;
+  --lane-5: #4f9a1e; --lane-6: #d9631f; --lane-7: #138bd4; --lane-8: #a83fc9; --lane-9: #9a8600;
+  color-scheme: light;
+}

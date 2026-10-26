@@ -1,0 +1,24 @@
+﻿[package]
+name = "ds-app"
+description = "Destiny Stone: cliente Git de escritorio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "destiny-stone"
+path = "src/main.rs"
+
+[dependencies]
+ds-core = { path = "../ds-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+eframe = "0.31"
+rfd = "0.15"
+notify = "8"
+dirs = "6"
+open = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }

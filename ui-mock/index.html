@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Destiny Stone · réplica de interfaz</title>
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <div id="tabbar"></div>
+    <div id="toolbar"></div>
+    <div id="banner" class="hidden"></div>
+    <div id="workspace">
+      <div id="sidebar"></div>
+      <div id="sidebar-resize"></div>
+      <div id="central"></div>
+    </div>
+    <div id="home" class="hidden"></div>
+    <div id="statusbar"></div>
+  </div>
+  <div id="tooltip" class="hidden"></div>
+  <div id="toasts"></div>
+
+  <!-- Mock-only controls: they do not exist in the real app. -->
+  <div id="mockbar">
+    <b>MOCK</b>
+    <button data-mock="theme">Tema</button>
+    <button data-mock="orientation">Horizontal / vertical</button>
+    <select data-mock="size">
+      <option value="">Ventana: libre</option>
+      <option value="1500x920">1500 × 920</option>
+      <option value="1280x800">1280 × 800</option>
+      <option value="960x600">960 × 600 (mínimo)</option>
+    </select>
+    <button data-mock="conflict">Simular conflicto</button>
+    <button data-mock="reset">Reiniciar datos</button>
+  </div>
+
+  <script src="js/data-repo.js"></script>
+  <script src="js/data-status.js"></script>
+  <script src="js/icons.js"></script>
+  <script src="js/explorer-layout.js"></script>
+  <script src="js/explorer.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/dialogs.js"></script>
+  <script>App.start();</script>
+</body>
+</html>
