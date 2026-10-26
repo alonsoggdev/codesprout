@@ -338,6 +338,21 @@ fn clone_remotes_fetch_push_pull_upstream() {
     assert_eq!(refs.current_branch.as_deref(), Some("feat"));
     assert_eq!(refs.local.iter().find(|l| l.name == "feat").unwrap().upstream.as_deref(), Some("origin/feat"));
     g::checkout(&a, &branch).unwrap();
+    // a branch that is not checked out is fast-forwarded in place, and refused once it diverges
+    g::checkout(&b, "feat").unwrap();
+    write(&b, "g.txt", "1
+");
+    commit_all(&b, "b2");
+    push(&b, "feat", false).unwrap();
+    g::fast_forward(&a, "origin", "feat", "feat", None).unwrap();
+    assert_eq!(sh(&a, &["rev-parse", "feat"]), sh(&b, &["rev-parse", "HEAD"]));
+    assert_eq!(g::refs(&a).unwrap().current_branch.as_deref(), Some(branch.as_str()));
+    g::checkout(&a, "feat").unwrap();
+    sh(&a, &["reset", "-q", "--hard", "HEAD~1"]);
+    sh(&a, &["commit", "--allow-empty", "-q", "-m", "x"]);
+    g::checkout(&a, &branch).unwrap();
+    let err = g::fast_forward(&a, "origin", "feat", "feat", None).unwrap_err();
+    assert!(err.to_string().contains("cámbiate a ella"), "{err}");
     g::delete_remote_branch(&a, "origin", "feat", None).unwrap();
     g::create_tag(&a, "v2", None, "", false).unwrap();
     g::push_tag(&a, "origin", "v2", None).unwrap();

@@ -918,6 +918,20 @@ pub fn pull(repo: &Path, remote: Option<&str>, branch: Option<&str>, use_rebase:
     conflict_aware(repo, &args, &Opts::op(op))
 }
 
+/// Updates a branch that is not checked out from `remote/branch` without switching to it.
+/// Only a fast-forward is possible: a diverged branch is rejected and left untouched.
+pub fn fast_forward(repo: &Path, remote: &str, branch: &str, local: &str, op: Option<&OpHandle>) -> Result<()> {
+    let spec = format!("refs/heads/{branch}:refs/heads/{local}");
+    git(repo, &["fetch", "--progress", remote, &spec], &Opts::op(op)).map_err(|e| {
+        if e.to_string().contains("non-fast-forward") {
+            anyhow::anyhow!("{local} tiene commits que no están en {remote}/{branch}: cámbiate a ella para hacer pull.")
+        } else {
+            e
+        }
+    })?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PushArgs {
     pub remote: String,

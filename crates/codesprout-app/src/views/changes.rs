@@ -51,8 +51,8 @@ fn lists(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     if has_conf {
         panel(&mut lu, app, idx, ListKind::Conflicted, &s.conflicted, each, busy, defer);
     }
-    panel(&mut lu, app, idx, ListKind::Unstaged, &s.unstaged, each, busy, defer);
     panel(&mut lu, app, idx, ListKind::Staged, &s.staged, each, busy, defer);
+    panel(&mut lu, app, idx, ListKind::Unstaged, &s.unstaged, each, busy, defer);
     let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(commit_rect));
     egui::Frame::new().fill(c.panel).inner_margin(10).show(&mut cu, |ui| {
         ui.set_min_size(ui.available_size());

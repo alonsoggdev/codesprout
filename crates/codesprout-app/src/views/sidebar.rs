@@ -171,7 +171,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
                 if b.behind > 0 {
                     s.push_str(&format!(" ↓{}", b.behind));
                 }
-                Some((s.trim().to_string(), c.yellow))
+                Some((s.trim().to_string(), c.text))
             } else {
                 None
             };

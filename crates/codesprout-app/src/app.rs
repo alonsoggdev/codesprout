@@ -1093,8 +1093,9 @@ fn tool_button(ui: &mut egui::Ui, icon: Icon, label: &str, badge: Option<u32>, e
         let pos = pos2(rect.center().x + 13.0, rect.min.y + 8.0);
         let gw = ui.painter().layout_no_wrap(text.clone(), FontId::proportional(10.0), Color32::WHITE).size().x;
         let br = Rect::from_center_size(pos, vec2((gw + 8.0).max(16.0), 15.0));
-        ui.painter().rect_filled(br, 7.5, c.accent);
-        ui.painter().text(pos, Align2::CENTER_CENTER, text, FontId::proportional(10.0), Color32::WHITE);
+        // black and white: the theme's text colour as the fill, its background for the digits
+        ui.painter().rect_filled(br, 7.5, c.text);
+        ui.painter().text(pos, Align2::CENTER_CENTER, text, FontId::proportional(10.0), c.bg);
     }
     resp.on_hover_text(tip)
 }

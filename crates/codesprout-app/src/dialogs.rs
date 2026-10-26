@@ -42,6 +42,40 @@ pub struct RebaseRow {
     message: String,
 }
 
+/// A local branch in the pull dialog: `branch` is the remote branch it is updated from ("" = none on that remote).
+pub struct PullRow {
+    local: String,
+    current: bool,
+    behind: u32,
+    branch: String,
+    on: bool,
+}
+
+/// A local branch in the push dialog.
+pub struct PushRow {
+    local: String,
+    ahead: u32,
+    published: bool,
+    remote_branch: String,
+    track: bool,
+    on: bool,
+}
+
+/// Remote branch a local branch pulls from on `remote`: its upstream there, else one with the same name.
+fn pull_source(b: &codesprout_core::LocalBranch, remote: &str, branches: &[(String, String)]) -> String {
+    match &b.upstream_branch {
+        Some(u) if b.upstream_remote.as_deref() == Some(remote) && !b.gone => u.clone(),
+        _ if branches.iter().any(|(r, br)| r == remote && br == &b.name) => b.name.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Remote branch a local branch is pushed to on `remote`, and whether to start tracking it.
+fn push_target(b: &codesprout_core::LocalBranch, remote: &str) -> (String, bool) {
+    let name = if b.upstream_remote.as_deref() == Some(remote) { b.upstream_branch.clone().unwrap_or(b.name.clone()) } else { b.name.clone() };
+    (name, b.upstream.is_none() || b.gone)
+}
+
 const REBASE_ACTIONS: [&str; 6] = ["Mantener", "Cambiar mensaje", "Combinar (squash)", "Combinar sin mensaje (fixup)", "Parar para editar", "Eliminar"];
 
 pub enum Dialog {
@@ -61,14 +95,15 @@ pub enum Dialog {
     Tag { hash: String, name: String, msg: String, push: bool, remote: String, remotes: Vec<String>, sign: bool, error: Option<String> },
     DeleteTag { name: String, remote: Option<String>, remote_too: bool },
     DiscardAll { tracked: usize, untracked: usize, with_untracked: bool },
-    Pull { local: String, remotes: Vec<String>, remote: String, branches: Vec<(String, String)>, branch: String, rebase: bool, error: Option<String> },
-    Push { locals: Vec<String>, local: String, remotes: Vec<String>, remote: String, remote_branch: String, upstream: bool, tags: bool, force: bool, error: Option<String> },
+    Pull { remotes: Vec<String>, remote: String, branches: Vec<(String, String)>, rows: Vec<PullRow>, rebase: bool, error: Option<String> },
+    Push { remotes: Vec<String>, remote: String, rows: Vec<PushRow>, tags: bool, force: bool, error: Option<String> },
     AddRemote { name: String, url: String, error: Option<String> },
     EditRemote { name: String, new_name: String, url: String, old_url: String, error: Option<String> },
     Clone { url: String, parent: String, name: String, touched: bool, provider: Option<Provider>, repos: Option<Vec<HostedRepo>>, loading: bool, filter: String, use_ssh: bool, error: Option<String> },
     InteractiveRebase { base: Option<String>, base_label: String, rows: Option<Vec<RebaseRow>>, has_merges: bool, error: Option<String> },
     FlowInit { cfg: FlowConfig, branches: Vec<String>, error: Option<String> },
-    Flow { cfg: FlowConfig, kind: FlowKind, name: String, keep: bool, tag_msg: String, error: Option<String> },
+    /// `current` is the feature/release/hotfix checked out (without prefix): then only finishing it is offered
+    Flow { cfg: FlowConfig, kind: FlowKind, current: Option<String>, name: String, keep: bool, tag_msg: String, error: Option<String> },
     CreatePr { remote: Option<RemoteRef>, title: String, body: String, source: String, target: String, locals: Vec<String>, targets: Vec<String>, draft: bool, error: Option<String> },
     LfsTrack { pattern: String, error: Option<String> },
     SubmoduleAdd { url: String, path: String, error: Option<String> },
@@ -502,75 +537,177 @@ impl App {
                     return Out::Close;
                 }
             }
-            Dialog::Pull { local, remotes, remote, branches, branch, rebase, error } => {
+            Dialog::Pull { remotes, remote, branches, rows, rebase, error } => {
                 ui.heading("Pull");
-                ui.label(format!("Traer cambios a {local}."));
-                ui.columns(2, |cols| {
-                    field_label(&mut cols[0], "Remoto");
-                    widgets::combo(&mut cols[0], "pull-remote", remote, remotes);
-                    field_label(&mut cols[1], "Rama remota");
-                    let opts: Vec<String> = branches.iter().filter(|(r, _)| r == remote).map(|(_, b)| b.clone()).collect();
-                    widgets::combo(&mut cols[1], "pull-branch", branch, &opts);
+                ui.label("Marca las ramas que quieres actualizar con los cambios del remoto.");
+                field_label(ui, "Remoto");
+                if widgets::combo(ui, "pull-remote", remote, remotes) {
+                    let locals = self.tab().and_then(|t| t.refs.as_ref()).map(|r| r.local.clone()).unwrap_or_default();
+                    for row in rows.iter_mut() {
+                        if let Some(b) = locals.iter().find(|b| b.name == row.local) {
+                            row.branch = pull_source(b, remote, branches);
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                let opts: Vec<String> = branches.iter().filter(|(r, _)| r == remote).map(|(_, b)| b.clone()).collect();
+                egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                    egui::Grid::new("pull-rows").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                        // the checked-out branch can pull any remote branch; the others only their counterpart
+                        for row in rows.iter_mut().filter(|r| r.current || !r.branch.is_empty()) {
+                            ui.add_enabled(!row.branch.is_empty() || row.current, egui::Checkbox::new(&mut row.on, RichText::new(&row.local).strong()));
+                            ui.label(widgets::small("←"));
+                            ui.horizontal(|ui| {
+                                if row.current {
+                                    widgets::combo(ui, "pull-branch", &mut row.branch, &opts);
+                                    ui.label(widgets::small("rama actual"));
+                                } else {
+                                    ui.label(format!("{remote}/{}", row.branch));
+                                }
+                                if row.behind > 0 {
+                                    ui.label(widgets::small(format!("↓{}", row.behind)));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
                 });
+                if rows.iter().any(|r| r.on && !r.current) {
+                    ui.label(widgets::small("Las ramas que no son la actual solo se actualizan si no tienen commits propios sin enviar."));
+                }
                 check(ui, rebase, "Hacer rebase en lugar de merge (--rebase)");
                 err(ui, error);
-                let (cancel, ok) = buttons(ui, "Pull", false, !busy);
+                let selected: Vec<&PullRow> = rows.iter().filter(|r| r.on && !r.branch.is_empty()).collect();
+                let (cancel, ok) = buttons(ui, "Pull", false, !busy && !selected.is_empty());
                 if cancel {
                     return Out::Close;
                 }
                 if ok {
-                    if branch.trim().is_empty() {
-                        *error = Some("Indica la rama remota (haz fetch si no aparece ninguna).".into());
-                    } else if let Some(p) = path {
-                        self.store.settings.pull_rebase = *rebase;
-                        self.persist();
-                        let (r, b, rb) = (remote.clone(), branch.trim().to_string(), *rebase);
-                        self.remote_op("Pull", move |h| git::pull(&p, Some(&r), Some(&b), rb, Some(h)), |app, r| {
-                            if !app.handle_conflicts(&r, "El pull") {
-                                app.ok("Pull completado");
+                    let Some(p) = path else { return Out::Close };
+                    self.store.settings.pull_rebase = *rebase;
+                    self.persist();
+                    let (r, rb) = (remote.clone(), *rebase);
+                    let jobs: Vec<(String, String, bool)> = selected.iter().map(|x| (x.local.clone(), x.branch.clone(), x.current)).collect();
+                    let n = jobs.len();
+                    // one after another; the checked-out branch last, since it may stop on conflicts
+                    self.remote_op(
+                        "Pull",
+                        move |h| {
+                            let mut failed = Vec::new();
+                            let mut current = None;
+                            for (local, branch, is_current) in jobs.iter().filter(|j| !j.2).chain(jobs.iter().filter(|j| j.2)) {
+                                if h.is_cancelled() {
+                                    anyhow::bail!("Cancelado");
+                                }
+                                let res = if *is_current {
+                                    git::pull(&p, Some(&r), Some(branch), rb, Some(h)).map(|o| current = Some(o))
+                                } else {
+                                    git::fast_forward(&p, &r, branch, local, Some(h))
+                                };
+                                if let Err(e) = res {
+                                    failed.push(format!("{local}: {e}"));
+                                }
                             }
-                        });
-                        return Out::Close;
-                    }
+                            Ok((current, failed))
+                        },
+                        move |app, (current, failed): (Option<codesprout_core::OpResult>, Vec<String>)| {
+                            if current.as_ref().is_some_and(|c| app.handle_conflicts(c, "El pull")) {
+                                return;
+                            }
+                            if !failed.is_empty() {
+                                app.toast(format!("No se pudieron actualizar todas las ramas:\n{}", failed.join("\n")), ToastKind::Warn);
+                            } else if n == 1 {
+                                app.ok("Pull completado");
+                            } else {
+                                app.ok(format!("{n} ramas actualizadas"));
+                            }
+                        },
+                    );
+                    return Out::Close;
                 }
             }
-            Dialog::Push { locals, local, remotes, remote, remote_branch, upstream, tags, force, error } => {
+            Dialog::Push { remotes, remote, rows, tags, force, error } => {
                 ui.heading("Push");
-                let before = (local.clone(), remote.clone());
-                ui.columns(2, |cols| {
-                    field_label(&mut cols[0], "Rama local");
-                    widgets::combo(&mut cols[0], "push-local", local, locals);
-                    field_label(&mut cols[1], "Remoto");
-                    widgets::combo(&mut cols[1], "push-remote", remote, remotes);
-                });
-                if before != (local.clone(), remote.clone()) {
-                    if let Some(b) = self.tab().and_then(|t| t.refs.as_ref()).and_then(|r| r.local.iter().find(|b| &b.name == local)) {
-                        *remote_branch = if b.upstream_remote.as_ref() == Some(remote) { b.upstream_branch.clone().unwrap_or(b.name.clone()) } else { b.name.clone() };
-                        *upstream = b.upstream.is_none() || b.gone;
+                ui.label("Marca las ramas que quieres enviar al remoto.");
+                field_label(ui, "Remoto");
+                if widgets::combo(ui, "push-remote", remote, remotes) {
+                    let locals = self.tab().and_then(|t| t.refs.as_ref()).map(|r| r.local.clone()).unwrap_or_default();
+                    for row in rows.iter_mut() {
+                        if let Some(b) = locals.iter().find(|b| b.name == row.local) {
+                            (row.remote_branch, row.track) = push_target(b, remote);
+                        }
                     }
                 }
-                field_label(ui, "Rama remota");
-                text_field(ui, remote_branch, "");
-                check(ui, upstream, "Establecer como rama de seguimiento (upstream)");
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                    egui::Grid::new("push-rows").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label(widgets::small("Rama local"));
+                        ui.label("");
+                        ui.label(widgets::small("Rama remota"));
+                        ui.label(widgets::small("Seguimiento"));
+                        ui.end_row();
+                        for row in rows.iter_mut() {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut row.on, RichText::new(&row.local).strong());
+                                if !row.published {
+                                    ui.label(widgets::small("nueva"));
+                                } else if row.ahead > 0 {
+                                    ui.label(widgets::small(format!("↑{}", row.ahead)));
+                                }
+                            });
+                            ui.label(widgets::small("→"));
+                            ui.add_enabled(row.on, egui::TextEdit::singleline(&mut row.remote_branch).desired_width(150.0));
+                            ui.add_enabled(row.on, egui::Checkbox::without_text(&mut row.track)).on_hover_text("Establecer como rama de seguimiento (upstream)");
+                            ui.end_row();
+                        }
+                    });
+                });
                 check(ui, tags, "Enviar también las etiquetas anotadas (--follow-tags)");
                 ui.checkbox(force, RichText::new("Forzar push (--force-with-lease)").color(theme::p().red));
                 err(ui, error);
-                let (cancel, ok) = buttons(ui, "Push", false, !busy);
+                let selected: Vec<&PushRow> = rows.iter().filter(|r| r.on).collect();
+                let (cancel, ok) = buttons(ui, "Push", false, !busy && !selected.is_empty());
                 if cancel {
                     return Out::Close;
                 }
                 if ok {
-                    let rb = remote_branch.trim().to_string();
-                    if rb.is_empty() {
-                        *error = Some("Indica la rama remota.".into());
+                    if let Some(r) = selected.iter().find(|r| r.remote_branch.trim().is_empty()) {
+                        *error = Some(format!("Indica la rama remota de {}.", r.local));
                     } else if let Some(p) = path {
-                        let args = PushArgs { remote: remote.clone(), branch: local.clone(), remote_branch: Some(rb.clone()), set_upstream: *upstream, force: *force, tags: *tags };
-                        let name = local.clone();
+                        let jobs: Vec<PushArgs> = selected
+                            .iter()
+                            .map(|x| PushArgs { remote: remote.clone(), branch: x.local.clone(), remote_branch: Some(x.remote_branch.trim().to_string()), set_upstream: x.track, force: *force, tags: *tags })
+                            .collect();
+                        let names: Vec<String> = jobs.iter().map(|j| j.branch.clone()).collect();
+                        let targets = jobs.iter().map(|j| format!("{remote}/{}", j.remote_branch.as_deref().unwrap_or_default())).collect::<Vec<_>>().join(", ");
                         let run = move |app: &mut App| {
-                            app.remote_op("Push", move |h| git::push(&p, &args, Some(h)), move |app, _| app.ok(format!("Push de {name} completado")));
+                            app.remote_op(
+                                "Push",
+                                move |h| {
+                                    let mut failed = Vec::new();
+                                    for a in &jobs {
+                                        if h.is_cancelled() {
+                                            anyhow::bail!("Cancelado");
+                                        }
+                                        if let Err(e) = git::push(&p, a, Some(h)) {
+                                            failed.push(format!("{}: {e}", a.branch));
+                                        }
+                                    }
+                                    Ok(failed)
+                                },
+                                move |app, failed: Vec<String>| {
+                                    if !failed.is_empty() {
+                                        app.toast(format!("No se pudieron enviar todas las ramas:\n{}", failed.join("\n")), ToastKind::Warn);
+                                    } else if let [name] = names.as_slice() {
+                                        app.ok(format!("Push de {name} completado"));
+                                    } else {
+                                        app.ok(format!("{} ramas enviadas", names.len()));
+                                    }
+                                },
+                            );
                         };
                         if *force {
-                            let msg = format!("Se sobrescribirá {remote}/{rb} con tu versión local. Los commits remotos que no tengas se perderán.");
+                            let msg = format!("Se sobrescribirá {targets} con tu versión local. Los commits remotos que no tengas se perderán.");
                             self.confirm("Push forzado", &msg, None, "Forzar push", true, run);
                         } else {
                             run(self);
@@ -847,50 +984,51 @@ impl App {
                     return Out::Close;
                 }
             }
-            Dialog::Flow { cfg, kind, name, keep, tag_msg, error } => {
+            Dialog::Flow { cfg, kind, current, name, keep, tag_msg, error } => {
                 ui.heading("git-flow");
-                ui.horizontal(|ui| {
-                    for k in FlowKind::ALL {
-                        ui.selectable_value(kind, k, k.label());
-                    }
-                });
-                ui.separator();
-                let locals = self.tab().and_then(|t| t.refs.as_ref()).map(|r| r.local.clone()).unwrap_or_default();
-                let prefix = cfg.prefix(*kind).to_string();
-                let in_progress: Vec<String> = locals.iter().filter_map(|b| b.name.strip_prefix(&prefix).map(String::from)).collect();
-                let base = if *kind == FlowKind::Hotfix { &cfg.master } else { &cfg.develop };
-                ui.label(RichText::new(format!("Empezar {} nueva", kind.label().to_lowercase())).strong());
-                ui.label(widgets::small(format!("Se crea {prefix}<nombre> desde {base}.")));
                 let mut start = false;
-                ui.horizontal(|ui| {
-                    if ui.add(egui::TextEdit::singleline(name).hint_text(if *kind == FlowKind::Feature { "nombre" } else { "versión, p. ej. 1.2.0" }).desired_width(260.0)).changed() {
-                        *name = git::branch_name_input(name);
-                    }
-                    start = widgets::primary_button(ui, "Empezar", !busy && !git::branch_name(name).is_empty()).clicked();
-                });
-                ui.add_space(8.0);
-                ui.label(RichText::new("En curso").strong());
-                if in_progress.is_empty() {
-                    ui.label(widgets::small("No hay ninguna en curso."));
-                }
-                if *kind != FlowKind::Feature {
-                    field_label(ui, "Mensaje de la etiqueta (al finalizar)");
-                    text_field(ui, tag_msg, "Opcional");
-                }
-                check(ui, keep, "Conservar la rama después de finalizar");
                 let mut finish = None;
-                for n in &in_progress {
-                    ui.horizontal(|ui| {
-                        crate::icons::show(ui, crate::icons::Icon::Branch, 14.0, theme::p().muted);
-                        ui.label(format!("{prefix}{n}"));
+                match current {
+                    // on a feature, release or hotfix the only thing to do is finish it
+                    Some(n) => {
+                        let branch = format!("{}{n}", cfg.prefix(*kind));
+                        let target = if *kind == FlowKind::Feature { cfg.develop.clone() } else { format!("{} y {}", cfg.master, cfg.develop) };
+                        ui.label(RichText::new(format!("Finalizar {} {branch}", kind.label().to_lowercase())).strong());
+                        ui.label(widgets::small(format!("Se fusiona en {target}.")));
+                        ui.add_space(4.0);
+                        if *kind != FlowKind::Feature {
+                            field_label(ui, "Mensaje de la etiqueta");
+                            text_field(ui, tag_msg, "Opcional");
+                        }
+                        check(ui, keep, "Conservar la rama después de finalizar");
+                        err(ui, error);
+                        ui.add_space(6.0);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add_enabled(!busy, egui::Button::new("Finalizar")).clicked() {
+                            if widgets::primary_button(ui, "Finalizar", !busy).clicked() {
                                 finish = Some(n.clone());
                             }
                         });
-                    });
+                    }
+                    None => {
+                        ui.horizontal(|ui| {
+                            for k in FlowKind::ALL {
+                                ui.selectable_value(kind, k, k.label());
+                            }
+                        });
+                        ui.separator();
+                        let prefix = cfg.prefix(*kind);
+                        let base = if *kind == FlowKind::Hotfix { &cfg.master } else { &cfg.develop };
+                        ui.label(RichText::new(format!("Empezar {} nueva", kind.label().to_lowercase())).strong());
+                        ui.label(widgets::small(format!("Se crea {prefix}<nombre> desde {base}.")));
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::TextEdit::singleline(name).hint_text(if *kind == FlowKind::Feature { "nombre" } else { "versión, p. ej. 1.2.0" }).desired_width(260.0)).changed() {
+                                *name = git::branch_name_input(name);
+                            }
+                            start = widgets::primary_button(ui, "Empezar", !busy && !git::branch_name(name).is_empty()).clicked();
+                        });
+                        err(ui, error);
+                    }
                 }
-                err(ui, error);
                 ui.add_space(6.0);
                 let close = ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.button("Cerrar").clicked()).inner;
                 if start {
@@ -1408,14 +1546,13 @@ impl App {
         };
         let remote = r.default_remote(Some(&b)).unwrap_or_default();
         let branches: Vec<(String, String)> = r.remote.iter().map(|x| (x.remote.clone(), x.branch.clone())).collect();
-        let branch = if b.upstream_remote.as_ref() == Some(&remote) && b.upstream_branch.is_some() {
-            b.upstream_branch.clone().unwrap()
-        } else if branches.iter().any(|(r, br)| r == &remote && br == &b.name) {
-            b.name.clone()
-        } else {
-            branches.iter().find(|(r, _)| r == &remote).map(|(_, b)| b.clone()).unwrap_or_default()
-        };
-        self.dialogs.push(Dialog::Pull { local: b.name.clone(), remotes: r.remotes.clone(), remote, branches, branch, rebase: self.store.settings.pull_rebase, error: None });
+        let mut rows: Vec<PullRow> = r.local.iter().map(|l| PullRow { local: l.name.clone(), current: l.current, behind: l.behind, branch: pull_source(l, &remote, &branches), on: l.current }).collect();
+        // the current branch first; when it has no counterpart, offer the first branch of the remote
+        rows.sort_by_key(|x| !x.current);
+        if let Some(c) = rows.first_mut().filter(|c| c.current && c.branch.is_empty()) {
+            c.branch = branches.iter().find(|(r, _)| r == &remote).map(|(_, b)| b.clone()).unwrap_or_default();
+        }
+        self.dialogs.push(Dialog::Pull { remotes: r.remotes.clone(), remote, branches, rows, rebase: self.store.settings.pull_rebase, error: None });
     }
 
     pub fn open_push(&mut self, branch: Option<String>) {
@@ -1427,18 +1564,16 @@ impl App {
             return self.toast("No hay ramas locales que enviar.", ToastKind::Warn);
         };
         let remote = r.default_remote(Some(&initial)).unwrap_or_default();
-        let remote_branch = if initial.upstream_remote.as_ref() == Some(&remote) { initial.upstream_branch.clone().unwrap_or(initial.name.clone()) } else { initial.name.clone() };
-        self.dialogs.push(Dialog::Push {
-            locals: r.local.iter().map(|b| b.name.clone()).collect(),
-            local: initial.name.clone(),
-            remotes: r.remotes.clone(),
-            remote,
-            remote_branch,
-            upstream: initial.upstream.is_none() || initial.gone,
-            tags: false,
-            force: false,
-            error: None,
-        });
+        let mut rows: Vec<PushRow> = r
+            .local
+            .iter()
+            .map(|l| {
+                let (remote_branch, track) = push_target(l, &remote);
+                PushRow { local: l.name.clone(), ahead: l.ahead, published: l.upstream.is_some() && !l.gone, remote_branch, track, on: l.name == initial.name }
+            })
+            .collect();
+        rows.sort_by_key(|x| !x.on);
+        self.dialogs.push(Dialog::Push { remotes: r.remotes.clone(), remote, rows, tags: false, force: false, error: None });
     }
 
     pub fn open_add_remote(&mut self) {
@@ -1499,7 +1634,11 @@ impl App {
         let Some(t) = self.tab() else { return };
         let Some(r) = &t.refs else { return };
         match t.flow.clone() {
-            Some(cfg) => self.dialogs.push(Dialog::Flow { cfg, kind: FlowKind::Feature, name: String::new(), keep: false, tag_msg: String::new(), error: None }),
+            Some(cfg) => {
+                let on = r.current_branch.as_deref().and_then(|b| FlowKind::ALL.into_iter().find_map(|k| b.strip_prefix(cfg.prefix(k)).filter(|n| !n.is_empty()).map(|n| (k, n.to_string()))));
+                let (kind, current) = on.map_or((FlowKind::Feature, None), |(k, n)| (k, Some(n)));
+                self.dialogs.push(Dialog::Flow { cfg, kind, current, name: String::new(), keep: false, tag_msg: String::new(), error: None })
+            }
             None => {
                 let branches: Vec<String> = r.local.iter().map(|b| b.name.clone()).collect();
                 let master = ["main", "master"].iter().find(|n| branches.iter().any(|b| b == *n)).map(|s| s.to_string()).or_else(|| r.current_branch.clone()).unwrap_or_else(|| "main".into());
