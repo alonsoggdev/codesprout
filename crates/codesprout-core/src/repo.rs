@@ -726,6 +726,58 @@ pub fn conflict_aware(repo: &Path, args: &[&str], opts: &Opts) -> Result<OpResul
     Err(failure(&r, args))
 }
 
+/// Cleans a branch name as it is typed: spaces become `_`, accents are dropped (`canción` →
+/// `cancion`) and anything else that is not a letter, digit, `-`, `_`, `.` or `/` is removed,
+/// as are repeated `_`, `/` and `.`. `/` is kept for folders like `feature/`.
+pub fn branch_name_input(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let ch = match ch {
+            c if c.is_whitespace() => '_',
+            'á' | 'à' | 'ä' | 'â' | 'ã' | 'å' => 'a',
+            'Á' | 'À' | 'Ä' | 'Â' | 'Ã' | 'Å' => 'A',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'É' | 'È' | 'Ë' | 'Ê' => 'E',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'Í' | 'Ì' | 'Ï' | 'Î' => 'I',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' => 'o',
+            'Ó' | 'Ò' | 'Ö' | 'Ô' | 'Õ' => 'O',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'Ú' | 'Ù' | 'Ü' | 'Û' => 'U',
+            'ñ' => 'n',
+            'Ñ' => 'N',
+            'ç' => 'c',
+            'Ç' => 'C',
+            c if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/') => c,
+            _ => continue,
+        };
+        if matches!(ch, '_' | '/' | '.') && out.ends_with(ch) {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Final form of a typed branch name: [`branch_name_input`] plus what can only be fixed once the
+/// name is complete. Each `/` folder loses leading and trailing `_`, `-` and `.` and a `.lock`
+/// ending, and empty folders are dropped. Returns an empty string if nothing valid is left.
+pub fn branch_name(s: &str) -> String {
+    let trim = |p: &str| p.trim_matches(|c| matches!(c, '_' | '-' | '.')).to_string();
+    branch_name_input(s)
+        .split('/')
+        .map(|part| {
+            let mut p = trim(part);
+            while let Some(rest) = p.strip_suffix(".lock") {
+                p = trim(rest);
+            }
+            p
+        })
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 pub fn check_ref_name(repo: &Path, is_branch: bool, name: &str) -> Result<()> {
     let full = if is_branch { name.to_string() } else { format!("refs/tags/{name}") };
     let args: Vec<&str> = if is_branch { vec!["check-ref-format", "--branch", &full] } else { vec!["check-ref-format", &full] };

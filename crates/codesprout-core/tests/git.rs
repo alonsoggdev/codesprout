@@ -675,3 +675,29 @@ fn hosting_urls_and_credential_hosts() {
     assert_eq!(r.web_url(), "https://dev.azure.com/org/proj/_git/repo");
     assert!(RemoteRef::parse("https://example.com/x.git").is_none());
 }
+
+#[test]
+fn branch_names_are_cleaned_while_typing_and_accepted_by_git() {
+    // while typing: spaces, accents and symbols; a trailing `/` or `_` stays so you can keep typing
+    assert_eq!(g::branch_name_input("Añadir canción nueva"), "Anadir_cancion_nueva");
+    assert_eq!(g::branch_name_input("feature/"), "feature/");
+    assert_eq!(g::branch_name_input("arreglo  del   login "), "arreglo_del_login_");
+    assert_eq!(g::branch_name_input(r"¿qué? ¡ya! @{x} ~^:*[\]"), "que_ya_x_");
+    assert_eq!(g::branch_name_input("a//b..c"), "a/b.c");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path(), "names");
+    for (typed, expected) in [
+        ("Corrección de errores ", "Correccion_de_errores"),
+        ("feature/Pantalla de login", "feature/Pantalla_de_login"),
+        ("hotfix/2.0.2", "hotfix/2.0.2"),
+        ("-rara-", "rara"),
+        ("/.oculta/x.lock/", "oculta/x"),
+        ("feature//_ Ñandú .", "feature/Nandu"),
+    ] {
+        let name = g::branch_name(typed);
+        assert_eq!(name, expected, "{typed:?}");
+        g::check_ref_name(&repo, true, &name).unwrap_or_else(|e| panic!("{name:?}: {e}"));
+    }
+    assert_eq!(g::branch_name(" ¿? "), "");
+}

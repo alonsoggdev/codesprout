@@ -242,6 +242,29 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         }
     }
 
+    // ---- main and develop (git-flow's configured ones if any) stand out: thicker, with a halo
+    let principal: Vec<bool> = {
+        let names: Vec<&str> = match &t.flow {
+            Some(f) => vec![f.master.as_str(), f.develop.as_str()],
+            None => vec!["main", "master", "develop"],
+        };
+        layout
+            .lanes
+            .iter()
+            .map(|l| {
+                let name = if l.kind == LaneKind::Remote { l.name.split_once('/').map_or(l.name.as_str(), |x| x.1) } else { l.name.as_str() };
+                l.is_main || names.contains(&name)
+            })
+            .collect()
+    };
+    let lane_stroke = |lane: usize, color: Color32, faded: bool| -> (Stroke, Option<Stroke>) {
+        if principal[lane] {
+            (Stroke::new(3.2_f32, color), (!faded).then(|| Stroke::new(8.0_f32, theme::with_alpha(color, 45))))
+        } else {
+            (Stroke::new(1.6_f32, color), None)
+        }
+    };
+
     // ---- edges
     let stroke_w = 1.6_f32;
     for e in &layout.edges {
@@ -260,13 +283,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
                 if Some(e.to) == layout.worktree {
                     painter.extend(Shape::dashed_line(&[a, b], Stroke::new(stroke_w, c.yellow), 4.0, 3.0));
                 } else {
-                    painter.line_segment([a, b], Stroke::new(stroke_w, color));
+                    let (stroke, halo) = lane_stroke(cn.lane, color, faded);
+                    if let Some(h) = halo {
+                        painter.line_segment([a, b], h);
+                    }
+                    painter.line_segment([a, b], stroke);
                 }
             }
             EdgeKind::Branch => {
                 let color = theme::lane_color(layout.lanes[cn.lane].color);
                 let color = if faded { theme::with_alpha(color, 60) } else { color };
-                painter.add(CubicBezierShape::from_points_stroke(geo.curve(a, b), false, Color32::TRANSPARENT, Stroke::new(stroke_w, color)));
+                let (stroke, halo) = lane_stroke(cn.lane, color, faded);
+                if let Some(h) = halo {
+                    painter.add(CubicBezierShape::from_points_stroke(geo.curve(a, b), false, Color32::TRANSPARENT, h));
+                }
+                painter.add(CubicBezierShape::from_points_stroke(geo.curve(a, b), false, Color32::TRANSPARENT, stroke));
             }
             EdgeKind::Merge => {
                 let color = if faded { theme::with_alpha(c.merge, 60) } else { c.merge };
@@ -293,6 +324,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
             continue;
         }
         let color = theme::lane_color(layout.lanes[n.lane].color);
+        let r = if principal[n.lane] { r + 1.5 } else { r };
         if Some(i) == layout.worktree {
             let pts: Vec<Pos2> = (0..=24).map(|k| p + vec2((k as f32 / 24.0 * std::f32::consts::TAU).cos(), (k as f32 / 24.0 * std::f32::consts::TAU).sin()) * r).collect();
             painter.extend(Shape::dashed_line(&pts, Stroke::new(1.8_f32, c.yellow), 3.0, 2.5));

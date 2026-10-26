@@ -156,6 +156,15 @@ fn check(ui: &mut egui::Ui, v: &mut bool, text: &str) {
     ui.checkbox(v, text);
 }
 
+/// Text field for a branch name that turns what is typed into a valid name on the fly.
+fn branch_name_field(ui: &mut egui::Ui, name: &mut String, hint: &str) -> egui::Response {
+    let r = text_field(ui, name, hint);
+    if r.changed() {
+        *name = git::branch_name_input(name);
+    }
+    r
+}
+
 impl App {
     pub fn confirm(&mut self, title: &str, msg: &str, detail: Option<String>, label: &str, danger: bool, action: impl FnOnce(&mut App) + 'static) {
         self.dialogs.push(Dialog::Confirm { title: title.into(), msg: msg.into(), detail, label: label.into(), danger, action: Some(Box::new(action)) });
@@ -283,14 +292,14 @@ impl App {
                     ui.label(widgets::small("Ya existe una rama local con ese nombre que no sigue a esta rama remota."));
                 }
                 field_label(ui, "Nombre de la rama local");
-                text_field(ui, name, "");
+                branch_name_field(ui, name, "");
                 err(ui, error);
                 let (cancel, ok) = buttons(ui, "Crear y cambiar", false, !busy);
                 if cancel {
                     return Out::Close;
                 }
                 if ok {
-                    let (Some(p), r, n) = (path, remote_ref.clone(), name.trim().to_string()) else { return Out::Close };
+                    let (Some(p), r, n) = (path, remote_ref.clone(), git::branch_name(name)) else { return Out::Close };
                     self.op("Checkout", move || git::checkout_remote(&p, &r, &n), |app, _| app.ok("Rama creada"));
                     return Out::Close;
                 }
@@ -298,11 +307,7 @@ impl App {
             Dialog::NewBranch { name, start, start_label, checkout, error } => {
                 ui.heading("Nueva rama");
                 field_label(ui, "Nombre");
-                let r = text_field(ui, name, "feature/mi-rama");
-                r.request_focus();
-                if name.contains(char::is_whitespace) {
-                    *name = name.replace(char::is_whitespace, "-");
-                }
+                branch_name_field(ui, name, "feature/mi_rama").request_focus();
                 ui.label(widgets::small(format!("Desde: {start_label}")));
                 check(ui, checkout, "Cambiar a la nueva rama");
                 err(ui, error);
@@ -311,7 +316,7 @@ impl App {
                     return Out::Close;
                 }
                 if ok || ui.input(|i| i.key_pressed(Key::Enter)) {
-                    let n = name.trim().to_string();
+                    let n = git::branch_name(name);
                     let exists = self.tab().and_then(|t| t.refs.as_ref()).is_some_and(|r| r.local.iter().any(|b| b.name == n));
                     if n.is_empty() {
                         *error = Some("Escribe un nombre para la rama.".into());
@@ -328,14 +333,14 @@ impl App {
             Dialog::RenameBranch { old, new, error } => {
                 ui.heading("Renombrar rama");
                 field_label(ui, "Nuevo nombre");
-                text_field(ui, new, "");
+                branch_name_field(ui, new, "");
                 err(ui, error);
                 let (cancel, ok) = buttons(ui, "Renombrar", false, !busy);
                 if cancel {
                     return Out::Close;
                 }
                 if ok {
-                    let n = new.trim().replace(char::is_whitespace, "-");
+                    let n = git::branch_name(new);
                     if n.is_empty() || &n == old {
                         *error = Some("Escribe un nombre distinto.".into());
                     } else if let Some(p) = path {
@@ -857,8 +862,10 @@ impl App {
                 ui.label(widgets::small(format!("Se crea {prefix}<nombre> desde {base}.")));
                 let mut start = false;
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(name).hint_text(if *kind == FlowKind::Feature { "nombre" } else { "versión, p. ej. 1.2.0" }).desired_width(260.0));
-                    start = widgets::primary_button(ui, "Empezar", !busy && !name.trim().is_empty()).clicked();
+                    if ui.add(egui::TextEdit::singleline(name).hint_text(if *kind == FlowKind::Feature { "nombre" } else { "versión, p. ej. 1.2.0" }).desired_width(260.0)).changed() {
+                        *name = git::branch_name_input(name);
+                    }
+                    start = widgets::primary_button(ui, "Empezar", !busy && !git::branch_name(name).is_empty()).clicked();
                 });
                 ui.add_space(8.0);
                 ui.label(RichText::new("En curso").strong());
@@ -886,7 +893,7 @@ impl App {
                 ui.add_space(6.0);
                 let close = ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.button("Cerrar").clicked()).inner;
                 if start {
-                    let (Some(p), k, n) = (path.clone(), *kind, name.trim().to_string()) else { return Out::Close };
+                    let (Some(p), k, n) = (path.clone(), *kind, git::branch_name(name)) else { return Out::Close };
                     self.op("git-flow: empezar", move || flow::start(&p, k, &n), |app, b| app.ok(format!("Rama {b} creada")));
                     return Out::Close;
                 }
