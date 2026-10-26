@@ -18,7 +18,7 @@ cargo test -p codesprout-core              # tests contra repositorios Git reale
 
 ## Publicar una versión
 
-La app busca versiones nuevas en las [releases de GitHub](https://github.com/alonsoggdev/gitroot/releases) al arrancar y cada 6 horas (se puede desactivar en Ajustes). Si hay una más nueva, el botón de la versión, arriba a la derecha, se pone verde y la app se actualiza y se reinicia sola.
+La app busca versiones nuevas en las [releases de GitHub](https://github.com/alonsoggdev/codesprout/releases) al arrancar y cada 6 horas (se puede desactivar en Ajustes). Si hay una más nueva, el botón de la versión, arriba a la derecha, se pone verde y la app se actualiza y se reinicia sola.
 
 1. Sube `version` en `Cargo.toml` (por ejemplo, `2.1.0`) y haz commit.
 2. Crea y sube la etiqueta: `git tag v2.1.0 && git push origin main v2.1.0`.

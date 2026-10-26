@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-pub const REPO: &str = "alonsoggdev/gitroot";
+pub const REPO: &str = "alonsoggdev/codesprout";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Name of this platform's executable in a release, if releases ship one.
