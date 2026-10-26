@@ -1,13 +1,8 @@
-//! Branch explorer canvas (Plastic SCM style): one lane per branch, forks drawn from the
-//! parent commit into the new lane and merges drawn as green arrows into the merge commit.
+//! History graph, laid out like Sourcetree: a compact graph column and then description, date,
+//! author and commit columns under a header, one commit per row, newest on top. Forks are drawn
+//! from the parent commit into the new lane and merges as green arrows into the merge commit.
 //!
-//! Two orientations:
-//! - horizontal: lanes are rows and time flows left to right; the lane name sits inside the band.
-//! - vertical: lanes are columns and time flows top (newest) to bottom, one commit per row,
-//!   with the commit's message, refs, author and date written next to the graph.
-//!
-//! Text is never rotated nor scaled below a readable size: zooming changes the spacing of the
-//! graph, not the size of the labels.
+//! Zooming (Ctrl+wheel) changes the spacing between lanes, never the size of the text.
 
 use std::sync::Arc;
 
@@ -20,107 +15,85 @@ use crate::repo_state::{RefKind, WORKTREE};
 use crate::theme;
 use crate::widgets;
 
-// horizontal
-const COL_W: f32 = 34.0;
-const ROW_H: f32 = 72.0;
-/// Band extent above and below the node centre line (the top part holds the lane name).
-const BAND_TOP: f32 = 25.0;
-const BAND_BOTTOM: f32 = 12.0;
-const PAD_X: f32 = 60.0;
-const PAD_Y: f32 = 40.0;
-// vertical
-const V_ROW: f32 = 28.0;
-const V_LANE: f32 = 24.0;
-const V_PAD_X: f32 = 22.0;
-const V_PAD_Y: f32 = 18.0;
-const V_TEXT_W: f32 = 900.0;
-/// Smallest font used for any label.
-const MIN_FONT: f32 = 11.0;
+const ROW: f32 = 24.0;
+const LANE: f32 = 16.0;
+const PAD_X: f32 = 14.0;
+const PAD_Y: f32 = 12.0;
+/// Room the columns after the graph need before the view scrolls sideways.
+const TEXT_W: f32 = 420.0;
+/// Column header strip.
+const HEADER: f32 = 24.0;
+/// Font of the ref badges.
+const BADGE_FONT: f32 = 11.0;
 
 struct Geo {
     origin: Pos2,
-    zoom: f32,
-    vertical: bool,
     columns: u32,
-    /// Spacing along the time axis.
-    step: f32,
     /// Spacing between lanes.
     lane: f32,
 }
 
 impl Geo {
-    fn new(origin: Pos2, zoom: f32, vertical: bool, columns: u32) -> Self {
-        if vertical {
-            Self { origin, zoom, vertical, columns, step: V_ROW, lane: (V_LANE * zoom).clamp(14.0, 48.0) }
-        } else {
-            Self { origin, zoom, vertical, columns, step: COL_W * zoom, lane: ROW_H * zoom }
-        }
+    fn new(origin: Pos2, zoom: f32, columns: u32) -> Self {
+        Self { origin, columns, lane: (LANE * zoom).clamp(10.0, 40.0) }
     }
 
+    /// Centre of a node: `col` is its position in time (newest = highest), `row` its lane.
     fn pos(&self, col: u32, row: u32) -> Pos2 {
-        if self.vertical {
-            let t = self.columns.saturating_sub(1).saturating_sub(col) as f32;
-            pos2(self.origin.x + V_PAD_X + row as f32 * self.lane, self.origin.y + V_PAD_Y + t * self.step)
-        } else {
-            pos2(self.origin.x + PAD_X * self.zoom + col as f32 * self.step, self.origin.y + self.pad_y() + row as f32 * self.lane)
-        }
+        let t = self.columns.saturating_sub(1).saturating_sub(col) as f32;
+        pos2(self.origin.x + PAD_X + row as f32 * self.lane, self.origin.y + PAD_Y + t * ROW)
     }
 
-    /// Fractional column under a screen point.
-    fn time_at(&self, p: Pos2) -> f32 {
-        if self.vertical {
-            self.columns as f32 - 1.0 - (p.y - self.origin.y - V_PAD_Y) / self.step
-        } else {
-            (p.x - self.origin.x - PAD_X * self.zoom) / self.step
-        }
-    }
-
-    /// Fractional lane row under a screen point.
-    fn lane_at(&self, p: Pos2) -> f32 {
-        if self.vertical {
-            (p.x - self.origin.x - V_PAD_X) / self.lane
-        } else {
-            (p.y - self.origin.y - self.pad_y()) / self.lane
-        }
+    /// Fractional column under a screen y.
+    fn time_at(&self, y: f32) -> f32 {
+        self.columns as f32 - 1.0 - (y - self.origin.y - PAD_Y) / ROW
     }
 
     fn content(&self, rows: u32) -> egui::Vec2 {
-        if self.vertical {
-            vec2(V_PAD_X * 2.0 + rows as f32 * self.lane + V_TEXT_W, V_PAD_Y * 2.0 + self.columns as f32 * self.step)
-        } else {
-            vec2(PAD_X * self.zoom * 2.0 + self.columns as f32 * self.step, self.pad_y() * 2.0 + rows as f32 * self.lane)
-        }
-    }
-
-    /// Top margin; it never shrinks below the height of a lane name drawn above its band.
-    fn pad_y(&self) -> f32 {
-        (PAD_Y * self.zoom).max(24.0)
+        vec2(PAD_X * 2.0 + rows as f32 * self.lane + TEXT_W, PAD_Y * 2.0 + self.columns as f32 * ROW)
     }
 
     fn node_radius(&self) -> f32 {
-        if self.vertical {
-            (self.lane * 0.26).clamp(4.5, 8.0)
-        } else {
-            7.0 * self.zoom
-        }
+        (self.lane * 0.25).clamp(3.5, 6.0)
     }
 
     /// Control points of a fork / merge connection from `a` (older) to `b` (newer).
     fn curve(&self, a: Pos2, b: Pos2) -> [Pos2; 4] {
-        if self.vertical {
-            let dy = (a.y - b.y).max(self.step);
-            [a, pos2(a.x, a.y - dy * 0.5), pos2(b.x, b.y + dy * 0.5), b]
-        } else {
-            let dx = (b.x - a.x).max(self.step);
-            [a, pos2(a.x + dx * 0.5, a.y), pos2(b.x - dx * 0.5, b.y), b]
-        }
+        let dy = (a.y - b.y).max(ROW);
+        [a, pos2(a.x, a.y - dy * 0.5), pos2(b.x, b.y + dy * 0.5), b]
+    }
+}
+
+/// x of each column after the graph, shared by the header and the rows.
+struct Columns {
+    text: f32,
+    date: f32,
+    author: f32,
+    hash: f32,
+    right: f32,
+    /// Date, author and commit fit next to the description.
+    meta: bool,
+}
+
+impl Columns {
+    const GAP: f32 = 14.0;
+
+    fn new(text: f32, right: f32) -> Self {
+        let hash = right - 64.0;
+        let author = hash - Self::GAP - 150.0;
+        let date = author - Self::GAP - 112.0;
+        Self { text, date, author, hash, right, meta: date - text > 220.0 }
+    }
+
+    fn description_end(&self) -> f32 {
+        if self.meta { self.date - Self::GAP } else { self.right }
     }
 }
 
 /// Rounded label; returns the width used.
 fn badge(p: &Painter, x: f32, cy: f32, text: &str, color: Color32) -> f32 {
     let c = theme::p();
-    let g = p.layout_no_wrap(text.to_string(), FontId::proportional(MIN_FONT), color);
+    let g = p.layout_no_wrap(text.to_string(), FontId::proportional(BADGE_FONT), color);
     let r = Rect::from_min_size(pos2(x, cy - 9.0), vec2(g.size().x + 10.0, 18.0));
     p.rect_filled(r, 9.0, theme::with_alpha(c.bg, 235));
     p.rect_filled(r, 9.0, theme::with_alpha(color, 40));
@@ -141,13 +114,14 @@ fn ref_style(kind: &RefKind) -> (Color32, &'static str) {
 
 pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     let c = theme::p();
-    let rect = ui.available_rect_before_wrap();
-    let resp = ui.allocate_rect(rect, Sense::click_and_drag());
-    let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, 0.0, c.bg);
-
     let zoom = app.store.settings.zoom;
-    let vertical = app.store.settings.vertical;
+    let full = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(full, Sense::click_and_drag());
+    ui.painter().rect_filled(full, 0.0, c.bg);
+    // the column header stays on top while the rows scroll under it
+    let header = Rect::from_min_max(full.min, pos2(full.max.x, full.min.y + HEADER));
+    let rect = Rect::from_min_max(pos2(full.min.x, header.max.y), full.max);
+    let painter = ui.painter().with_clip_rect(rect);
     let t = &mut app.tabs[idx];
     if !t.loaded {
         painter.text(rect.center(), Align2::CENTER_CENTER, "Cargando historial…", FontId::proportional(14.0), c.muted);
@@ -160,25 +134,24 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     }
     let ptr = Arc::as_ptr(&layout) as usize;
     if t.explorer.grid_for != ptr {
-        t.explorer.grid = layout.nodes.iter().enumerate().map(|(i, n)| ((n.col, n.row), i)).collect();
         t.explorer.by_col = layout.nodes.iter().enumerate().map(|(i, n)| (n.col, i)).collect();
         t.explorer.grid_for = ptr;
     }
-    let content = Geo::new(Pos2::ZERO, zoom, vertical, layout.columns).content(layout.rows);
+    let content = Geo::new(Pos2::ZERO, zoom, layout.columns).content(layout.rows);
 
     // ---- navigation
     let st = &mut t.explorer;
     if !st.initialized {
-        // newest commits in view: right end when horizontal, top when vertical
-        st.offset = if vertical { vec2(0.0, 0.0) } else { vec2((content.x - rect.width()).max(0.0), 0.0) };
+        // newest commits (top) in view
+        st.offset = vec2(0.0, 0.0);
         st.initialized = true;
         st.last_zoom = zoom;
     }
     if (st.last_zoom - zoom).abs() > f32::EPSILON {
         // keep the view centre steady when zooming with the buttons
         let k = zoom / st.last_zoom;
-        let centre = st.offset + rect.size() / 2.0;
-        st.offset = if vertical { vec2(centre.x * k - rect.width() / 2.0, st.offset.y) } else { centre * k - rect.size() / 2.0 };
+        let centre = st.offset.x + rect.width() / 2.0;
+        st.offset.x = centre * k - rect.width() / 2.0;
         st.last_zoom = zoom;
     }
     if resp.dragged() {
@@ -191,11 +164,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
             let factor = if (zd - 1.0).abs() > 1e-3 { zd } else { 1.0 + scroll.y * 0.002 };
             new_zoom = (zoom * factor).clamp(0.4, 2.5);
             if let Some(p) = resp.hover_pos() {
-                let k = new_zoom / zoom;
-                let anchor = p - rect.min + st.offset;
-                let scaled = anchor * k - (p - rect.min);
-                // vertically the rows keep their height: only the lanes are scaled
-                st.offset = if vertical { vec2(scaled.x, st.offset.y) } else { scaled };
+                // the rows keep their height: only the lanes are scaled
+                let anchor = p.x - rect.min.x + st.offset.x;
+                st.offset.x = anchor * new_zoom / zoom - (p.x - rect.min.x);
                 st.last_zoom = new_zoom;
             }
         } else {
@@ -203,13 +174,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         }
     }
     let max_off = (content - rect.size()).max(vec2(0.0, 0.0));
-    let geo_tmp = Geo::new(rect.min - st.offset, zoom, vertical, layout.columns);
     if let Some(h) = st.center_on.take() {
         let i = if h == WORKTREE { layout.worktree } else { t.commit_index.get(&h).copied() };
         if let Some(i) = i {
+            let geo = Geo::new(Pos2::ZERO, zoom, layout.columns);
             let n = layout.nodes[i];
-            let p = geo_tmp.pos(n.col, n.row) - geo_tmp.origin;
-            st.offset = if vertical { vec2(0.0, p.y - rect.height() * 0.4) } else { vec2(p.x - rect.width() * 0.6, p.y - rect.height() * 0.4) };
+            st.offset = vec2(0.0, geo.pos(n.col, n.row).y - rect.height() * 0.4);
         }
     }
     st.offset = st.offset.clamp(vec2(0.0, 0.0), max_off);
@@ -218,10 +188,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         defer.push(Box::new(|a| a.persist()));
     }
     let t = &mut app.tabs[idx];
-    let geo = Geo::new(rect.min - t.explorer.offset, zoom, vertical, layout.columns);
+    let geo = Geo::new(rect.min - t.explorer.offset, zoom, layout.columns);
 
     // visible range of columns (time axis)
-    let (ta, tb) = (geo.time_at(rect.min), geo.time_at(rect.max));
+    let (ta, tb) = (geo.time_at(rect.min.y), geo.time_at(rect.max.y));
     let c0 = (ta.min(tb).floor() - 2.0).max(0.0) as u32;
     let c1 = (ta.max(tb).ceil() + 2.0).max(0.0) as u32;
     let visible = |col: u32| col >= c0 && col <= c1;
@@ -239,31 +209,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         !(super::history::matches(t, &t.commits[i], &q) || lane.name.to_lowercase().contains(&q))
     };
 
-    // ---- hovered node: by grid cell (horizontal) or by row (vertical)
+    // ---- hovered row (and whether the pointer is over its node)
     let r = geo.node_radius();
-    let hover_pos = resp.hover_pos();
     let mut hovered: Option<usize> = None;
     let mut over_node = false;
-    if let Some(p) = hover_pos {
-        let lc = geo.time_at(p).round();
+    if let Some(p) = resp.hover_pos().filter(|p| rect.contains(*p)) {
+        let lc = geo.time_at(p.y).round();
         if lc >= 0.0 {
-            if vertical {
-                if let Some(&i) = t.explorer.by_col.get(&(lc as u32)) {
-                    hovered = Some(i);
-                    let n = layout.nodes[i];
-                    over_node = geo.pos(n.col, n.row).distance(p) <= r + 5.0;
-                }
-            } else {
-                let lr = geo.lane_at(p).round();
-                if lr >= 0.0 {
-                    if let Some(&i) = t.explorer.grid.get(&(lc as u32, lr as u32)) {
-                        let n = layout.nodes[i];
-                        if geo.pos(n.col, n.row).distance(p) <= r + 5.0 {
-                            hovered = Some(i);
-                            over_node = true;
-                        }
-                    }
-                }
+            if let Some(&i) = t.explorer.by_col.get(&(lc as u32)) {
+                hovered = Some(i);
+                let n = layout.nodes[i];
+                over_node = geo.pos(n.col, n.row).distance(p) <= r + 5.0;
             }
         }
     }
@@ -272,67 +228,22 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     let compare = t.compare_with.clone();
     let hash_of = |i: usize| if Some(i) == layout.worktree { WORKTREE } else { t.commits[i].hash.as_str() };
 
-    // ---- vertical: row highlights behind everything
-    if vertical {
-        for (&col, &i) in t.explorer.by_col.iter().filter(|(col, _)| visible(**col)) {
-            let y = geo.pos(col, 0).y;
-            let row = Rect::from_min_max(pos2(rect.min.x, y - geo.step / 2.0), pos2(rect.max.x, y + geo.step / 2.0));
-            let h = hash_of(i);
-            if selected.as_deref() == Some(h) {
-                painter.rect_filled(row, 0.0, c.sel);
-            } else if compare.as_deref() == Some(h) {
-                painter.rect_filled(row, 0.0, c.yellow_soft);
-            } else if hovered == Some(i) {
-                painter.rect_filled(row, 0.0, c.hover);
-            }
-        }
-    }
-
-    // ---- lanes (bands; horizontal lanes also get their name, painted last)
-    let mut labels = Vec::new();
-    for lane in &layout.lanes {
-        if lane.end < c0 || lane.start > c1 {
-            continue;
-        }
-        let color = theme::lane_color(lane.color);
-        let a = geo.pos(lane.start, lane.row);
-        let b = geo.pos(lane.end, lane.row);
-        let band = if vertical {
-            let half = geo.lane * 0.4;
-            Rect::from_min_max(pos2(a.x - half, b.y - geo.step * 0.45), pos2(a.x + half, a.y + geo.step * 0.45))
-        } else {
-            Rect::from_min_max(pos2(a.x - geo.step * 0.5, a.y - BAND_TOP * zoom), pos2(b.x + geo.step * 0.5, b.y + BAND_BOTTOM * zoom))
-        };
-        let radius = if vertical { geo.lane * 0.4 } else { 6.0 * zoom };
-        let alpha = if theme::is_dark() { 26 } else { 20 };
-        painter.rect_filled(band, radius, theme::with_alpha(color, alpha));
-        if lane.kind == LaneKind::Inferred {
-            let pts = [band.left_top(), band.right_top(), band.right_bottom(), band.left_bottom(), band.left_top()];
-            painter.extend(Shape::dashed_line(&pts, Stroke::new(1.0_f32, theme::with_alpha(color, 90)), 4.0, 3.0));
-        } else {
-            painter.rect_stroke(band, radius, Stroke::new(if lane.is_current { 1.6_f32 } else { 1.0 }, theme::with_alpha(color, if lane.is_current { 160 } else { 80 })), egui::StrokeKind::Inside);
-        }
-        if vertical {
-            continue;
-        }
-        // label inside the band, sticky to the left edge of the view; it may run past the end
-        // of a short band (it gets its own background then)
-        let label_x = band.min.x.max(rect.min.x + 6.0);
-        if label_x < band.max.x - 8.0 {
-            let font = FontId::proportional((if lane.is_main { 12.0 } else { MIN_FONT }) * zoom.clamp(1.0, 1.4));
-            let galley = painter.layout_no_wrap(lane_label(lane), font, if lane.kind == LaneKind::Inferred { theme::with_alpha(color, 190) } else { color });
-            // inside the band's top strip when it fits, otherwise just above the band
-            // it fits when it ends above the nodes (centre line minus the node radius)
-            let inside = 2.0 + galley.size().y <= (BAND_TOP - 7.0) * zoom;
-            let pos = if inside { pos2(label_x + 5.0, band.min.y + 2.0) } else { pos2(label_x + 2.0, band.min.y - galley.size().y - 1.0) };
-            let clip = Rect::from_min_max(pos2(label_x - 1.0, pos.y - 1.0), pos2(band.max.x.max(label_x + 240.0), pos.y + galley.size().y + 1.0));
-            let bg = Rect::from_min_size(pos - vec2(3.0, 0.0), galley.size() + vec2(6.0, 0.0));
-            labels.push((clip.intersect(rect), bg, pos, galley, color));
+    // ---- row highlights behind everything
+    for (&col, &i) in t.explorer.by_col.iter().filter(|(col, _)| visible(**col)) {
+        let y = geo.pos(col, 0).y;
+        let row = Rect::from_min_max(pos2(rect.min.x, y - ROW / 2.0), pos2(rect.max.x, y + ROW / 2.0));
+        let h = hash_of(i);
+        if selected.as_deref() == Some(h) {
+            painter.rect_filled(row, 0.0, c.sel);
+        } else if compare.as_deref() == Some(h) {
+            painter.rect_filled(row, 0.0, c.yellow_soft);
+        } else if hovered == Some(i) {
+            painter.rect_filled(row, 0.0, c.hover);
         }
     }
 
     // ---- edges
-    let stroke_w = if vertical { 2.0 } else { (2.0 * zoom).max(1.2) };
+    let stroke_w = 1.6_f32;
     for e in &layout.edges {
         let (pn, cn) = (layout.nodes[e.from], layout.nodes[e.to]);
         let (lo, hi) = (pn.col.min(cn.col), pn.col.max(cn.col));
@@ -360,12 +271,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
             EdgeKind::Merge => {
                 let color = if faded { theme::with_alpha(c.merge, 60) } else { c.merge };
                 let pts = geo.curve(a, b);
-                painter.add(CubicBezierShape::from_points_stroke(pts, false, Color32::TRANSPARENT, Stroke::new(stroke_w * 0.85, color)));
+                painter.add(CubicBezierShape::from_points_stroke(pts, false, Color32::TRANSPARENT, Stroke::new(stroke_w * 0.85_f32, color)));
                 // arrow head touching the merge commit
                 let dir = (b - pts[2]).normalized();
                 let tip = b - dir * (r + 1.5);
                 let side = vec2(-dir.y, dir.x);
-                let s = if vertical { 6.0 } else { 6.0 * zoom.max(0.7) };
+                let s = 6.0;
                 painter.add(Shape::convex_polygon(vec![tip, tip - dir * s + side * s * 0.6, tip - dir * s - side * s * 0.6], color, Stroke::NONE));
             }
         }
@@ -373,7 +284,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
 
     // ---- nodes
     let wt_count = t.change_count();
-    let ring = if vertical { 3.0 } else { 4.0 * zoom };
     for (i, n) in layout.nodes.iter().enumerate() {
         if !visible(n.col) {
             continue;
@@ -382,117 +292,86 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         if p.y < rect.min.y - 40.0 || p.y > rect.max.y + 40.0 || p.x < rect.min.x - 40.0 || p.x > rect.max.x + 40.0 {
             continue;
         }
-        let lane = &layout.lanes[n.lane];
-        let color = theme::lane_color(lane.color);
-        let h = hash_of(i);
+        let color = theme::lane_color(layout.lanes[n.lane].color);
         if Some(i) == layout.worktree {
             let pts: Vec<Pos2> = (0..=24).map(|k| p + vec2((k as f32 / 24.0 * std::f32::consts::TAU).cos(), (k as f32 / 24.0 * std::f32::consts::TAU).sin()) * r).collect();
             painter.extend(Shape::dashed_line(&pts, Stroke::new(1.8_f32, c.yellow), 3.0, 2.5));
-            if !vertical && zoom >= 0.6 {
-                painter.text(p + vec2(r + 6.0, 0.0), Align2::LEFT_CENTER, format!("{wt_count} cambios"), FontId::proportional(MIN_FONT), c.yellow);
-            }
         } else {
             let fill = if dim(i) { theme::with_alpha(color, 50) } else { color };
             painter.circle(p, r, fill, Stroke::new(2.0_f32, c.bg));
             if t.commits[i].parents.len() > 1 {
                 painter.circle_filled(p, r * 0.38, c.bg);
             }
-            if head.as_deref() == Some(h) {
-                painter.circle_stroke(p, r + ring, Stroke::new(2.0_f32, c.text));
-            }
-        }
-        if !vertical {
-            // vertically the whole row is highlighted instead
-            if selected.as_deref() == Some(h) {
-                painter.circle_stroke(p, r + 7.0 * zoom, Stroke::new(2.0_f32, c.accent));
-            }
-            if compare.as_deref() == Some(h) {
-                painter.circle_stroke(p, r + 7.0 * zoom, Stroke::new(2.0_f32, c.yellow));
+            if head.as_deref() == Some(hash_of(i)) {
+                painter.circle_stroke(p, r + 3.0, Stroke::new(2.0_f32, c.text));
             }
         }
         if hovered == Some(i) && over_node {
             painter.circle_stroke(p, r + 2.0, Stroke::new(1.5_f32, theme::with_alpha(c.text, 140)));
         }
-        // horizontal: ref badges under the node (tags, tips that differ from the lane name)
-        if !vertical && zoom >= 0.7 && Some(i) != layout.worktree {
-            if let Some(refs) = t.ref_map.get(h) {
-                let mut y = p.y + BAND_BOTTOM * zoom + 12.0;
-                for rf in refs.iter().filter(|rf| rf.name != lane.name).take(2) {
-                    let (col, prefix) = ref_style(&rf.kind);
-                    let text = format!("{prefix}{}", rf.name);
-                    let w = painter.layout_no_wrap(text.clone(), FontId::proportional(MIN_FONT), col).size().x + 10.0;
-                    badge(&painter, p.x - w / 2.0, y, &text, col);
-                    y += 20.0;
-                }
+    }
+
+    // ---- description, date, author and commit columns next to the graph
+    let cols = Columns::new((geo.origin.x + PAD_X + layout.rows as f32 * geo.lane).max(rect.min.x + 8.0), rect.max.x - 10.0);
+    let tips: std::collections::HashMap<usize, &codesprout_core::explorer::Lane> =
+        layout.lanes.iter().filter(|l| l.kind == LaneKind::Inferred).map(|l| (l.tip, l)).collect();
+    for (&col, &i) in t.explorer.by_col.iter().filter(|(col, _)| visible(**col)) {
+        let y = geo.pos(col, 0).y;
+        if y < rect.min.y - ROW || y > rect.max.y + ROW {
+            continue;
+        }
+        let cell = |from: f32, to: f32| painter.with_clip_rect(Rect::from_min_max(pos2(from, y - ROW / 2.0), pos2(to, y + ROW / 2.0)).intersect(rect));
+        let p = cell(cols.text, cols.description_end());
+        if Some(i) == layout.worktree {
+            p.text(pos2(cols.text, y), Align2::LEFT_CENTER, format!("Cambios sin confirmar ({wt_count})"), FontId::proportional(13.0), c.yellow);
+            continue;
+        }
+        let cm = &t.commits[i];
+        let faded = dim(i);
+        let mut x = cols.text;
+        if let Some(refs) = t.ref_map.get(&cm.hash) {
+            for rf in refs.iter().take(3) {
+                let (col, prefix) = ref_style(&rf.kind);
+                x += badge(&p, x, y, &format!("{prefix}{}", rf.name), col);
             }
+            if refs.len() > 3 {
+                x += badge(&p, x, y, &format!("+{}", refs.len() - 3), c.muted);
+            }
+        }
+        if let Some(lane) = tips.get(&i) {
+            x += badge(&p, x, y, &format!("{} (eliminada)", lane.name), theme::lane_color(lane.color));
+        }
+        let text_color = if faded { theme::with_alpha(c.text, 90) } else { c.text };
+        p.text(pos2(x + 2.0, y), Align2::LEFT_CENTER, &cm.subject, FontId::proportional(13.0), text_color);
+        if cols.meta {
+            let muted = if faded { theme::with_alpha(c.muted, 90) } else { c.muted };
+            let text2 = if faded { muted } else { c.text2 };
+            cell(cols.date, cols.author - Columns::GAP).text(pos2(cols.date, y), Align2::LEFT_CENTER, widgets::full_time(cm.time), FontId::proportional(12.0), text2);
+            cell(cols.author, cols.hash - Columns::GAP).text(pos2(cols.author, y), Align2::LEFT_CENTER, &cm.author, FontId::proportional(12.5), text2);
+            cell(cols.hash, cols.right).text(pos2(cols.hash, y), Align2::LEFT_CENTER, &cm.hash[..8], theme::mono(11.5), muted);
         }
     }
 
-    for (clip, bg, pos, galley, color) in labels {
-        let p = painter.with_clip_rect(clip);
-        p.rect_filled(bg, 3.0, theme::with_alpha(c.bg, 225));
-        p.galley(pos, galley, color);
+    // ---- column header
+    let hp = ui.painter().with_clip_rect(header);
+    hp.rect_filled(header, 0.0, c.panel);
+    hp.hline(header.x_range(), header.max.y - 0.5, Stroke::new(1.0_f32, c.border));
+    let mut titles = vec![(header.min.x + 8.0, "Gráfico"), (cols.text, "Descripción")];
+    if cols.meta {
+        titles.extend([(cols.date, "Fecha"), (cols.author, "Autor"), (cols.hash, "Commit")]);
     }
-
-    // ---- vertical: commit text next to the graph
-    if vertical {
-        let text_x = (geo.origin.x + V_PAD_X + layout.rows as f32 * geo.lane + 6.0).max(rect.min.x + 8.0);
-        let right = rect.max.x - 10.0;
-        let wide = right - text_x > 620.0;
-        let tips: std::collections::HashMap<usize, &codesprout_core::explorer::Lane> =
-            layout.lanes.iter().filter(|l| l.kind == LaneKind::Inferred).map(|l| (l.tip, l)).collect();
-        for (&col, &i) in t.explorer.by_col.iter().filter(|(col, _)| visible(**col)) {
-            let y = geo.pos(col, 0).y;
-            if y < rect.min.y - V_ROW || y > rect.max.y + V_ROW {
-                continue;
-            }
-            let row_clip = Rect::from_min_max(pos2(text_x, y - geo.step / 2.0), pos2(right, y + geo.step / 2.0)).intersect(rect);
-            let p = painter.with_clip_rect(row_clip);
-            if Some(i) == layout.worktree {
-                p.text(pos2(text_x, y), Align2::LEFT_CENTER, format!("Cambios sin confirmar ({wt_count})"), FontId::proportional(13.0), c.yellow);
-                continue;
-            }
-            let cm = &t.commits[i];
-            let faded = dim(i);
-            let mut x = text_x;
-            if let Some(refs) = t.ref_map.get(&cm.hash) {
-                for rf in refs.iter().take(3) {
-                    let (col, prefix) = ref_style(&rf.kind);
-                    x += badge(&p, x, y, &format!("{prefix}{}", rf.name), col);
-                }
-                if refs.len() > 3 {
-                    x += badge(&p, x, y, &format!("+{}", refs.len() - 3), c.muted);
-                }
-            }
-            if let Some(lane) = tips.get(&i) {
-                x += badge(&p, x, y, &lane_label(lane), theme::lane_color(lane.color));
-            }
-            let meta_w = if wide { 340.0 } else { 0.0 };
-            let subject_clip = Rect::from_min_max(pos2(x, row_clip.min.y), pos2((right - meta_w - 10.0).max(x), row_clip.max.y)).intersect(rect);
-            let text_color = if faded { theme::with_alpha(c.text, 90) } else { c.text };
-            painter.with_clip_rect(subject_clip).text(pos2(x + 2.0, y), Align2::LEFT_CENTER, &cm.subject, FontId::proportional(13.0), text_color);
-            if wide {
-                let muted = if faded { theme::with_alpha(c.muted, 90) } else { c.muted };
-                let author_clip = Rect::from_min_max(pos2(right - meta_w, row_clip.min.y), pos2(right - meta_w + 150.0, row_clip.max.y)).intersect(rect);
-                painter.with_clip_rect(author_clip).text(pos2(right - meta_w, y), Align2::LEFT_CENTER, &cm.author, FontId::proportional(12.5), if faded { muted } else { c.text2 });
-                p.text(pos2(right - 180.0, y), Align2::LEFT_CENTER, widgets::rel_time(cm.time), FontId::proportional(12.0), muted);
-                p.text(pos2(right, y), Align2::RIGHT_CENTER, &cm.hash[..8], theme::mono(11.5), muted);
-            }
+    for (k, &(x, title)) in titles.iter().enumerate() {
+        let end = titles.get(k + 1).map_or(header.max.x, |n| n.0 - Columns::GAP / 2.0);
+        if k > 0 {
+            hp.vline(x - Columns::GAP / 2.0, header.y_range().shrink(5.0), Stroke::new(1.0_f32, c.border));
         }
-    }
-
-    // ---- minimal legend (vertically it would cover the last row's text)
-    if !vertical {
-        let legend = format!("{} ramas · {} commits · arrastra para moverte, Ctrl+rueda para zoom, Ctrl+clic para marcar y comparar", layout.lanes.len(), n_commits);
-        let lg = painter.layout_no_wrap(legend, FontId::proportional(MIN_FONT), c.muted);
-        let lpos = rect.left_bottom() + vec2(10.0, -10.0 - lg.size().y);
-        painter.rect_filled(Rect::from_min_size(lpos - vec2(4.0, 2.0), lg.size() + vec2(8.0, 4.0)), 4.0, theme::with_alpha(c.bg, 220));
-        painter.galley(lpos, lg, c.muted);
+        hp.with_clip_rect(Rect::from_min_max(pos2(x, header.min.y), pos2(end - 4.0, header.max.y)).intersect(header))
+            .text(pos2(x, header.center().y), Align2::LEFT_CENTER, title, FontId::proportional(12.0), c.text2);
     }
 
     // ---- interaction
     let menu_open = resp.context_menu_opened();
-    // vertically the row already shows the details: the tooltip appears only over the node
+    // the row already shows the details: the tooltip appears only over the node
     if let Some(i) = hovered.filter(|_| !menu_open && over_node) {
         let tip_id = ui.id().with(("explorer-tip", i));
         if Some(i) == layout.worktree {
@@ -574,18 +453,4 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
             }
         }
     });
-}
-
-fn lane_label(lane: &codesprout_core::explorer::Lane) -> String {
-    let mut text = lane.name.clone();
-    match lane.kind {
-        LaneKind::Inferred => text.push_str(" (eliminada)"),
-        LaneKind::Remote => text = format!("☁ {text}"),
-        LaneKind::Detached if lane.name == "HEAD" => text = "HEAD separado".into(),
-        _ => {}
-    }
-    if lane.is_current {
-        text = format!("● {text}");
-    }
-    text
 }

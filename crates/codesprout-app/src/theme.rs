@@ -143,10 +143,6 @@ pub fn p() -> &'static Palette {
     }
 }
 
-pub fn is_dark() -> bool {
-    DARK.load(Ordering::Relaxed)
-}
-
 pub fn lane_color(idx: usize) -> Color32 {
     let l = &p().lanes;
     l[idx % l.len()]

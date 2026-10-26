@@ -229,9 +229,7 @@ pub struct ExplorerState {
     pub center_on: Option<String>,
     /// Lane names or commit text highlighted by the quick filter.
     pub filter: String,
-    /// (col, row) -> node, rebuilt when the layout changes (identified by its pointer).
-    pub grid: HashMap<(u32, u32), usize>,
-    /// col -> node, for the vertical orientation (one commit per row).
+    /// col -> node (one commit per row), rebuilt when the layout changes (identified by its pointer).
     pub by_col: HashMap<u32, usize>,
     pub grid_for: usize,
     pub last_zoom: f32,
@@ -316,7 +314,6 @@ pub struct RepoTab {
     pub sign: bool,
     pub explorer: ExplorerState,
     pub search: SearchState,
-    pub list_scroll_to: Option<usize>,
     pub reflog: Option<Vec<ReflogEntry>>,
     pub reflog_selected: Option<usize>,
     pub file_history: Option<FileHistoryState>,
@@ -370,7 +367,6 @@ impl RepoTab {
             sign: false,
             explorer: ExplorerState::default(),
             search: SearchState::default(),
-            list_scroll_to: None,
             reflog: None,
             reflog_selected: None,
             file_history: None,

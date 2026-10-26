@@ -1,6 +1,6 @@
 # CodeSprout
 
-Cliente Git de escritorio escrito en Rust, con interfaz nativa acelerada por GPU (egui). Su pieza central es un explorador de ramas al estilo Plastic SCM: cada rama es un carril horizontal, el tiempo avanza de izquierda a derecha y se ve dónde se bifurca y dónde se vuelve a juntar cada rama.
+Cliente Git de escritorio escrito en Rust, con interfaz nativa acelerada por GPU (egui). El historial se ve como en Sourcetree: un gráfico de ramas vertical, lo más reciente arriba, con la descripción, la fecha, el autor y el commit de cada fila.
 
 ## Requisitos
 
@@ -28,14 +28,14 @@ La app busca versiones nuevas en las [releases de GitHub](https://github.com/alo
 
 | Área | Qué puedes hacer |
 | --- | --- |
-| Explorador de ramas | Un carril por rama (locales, remotas y ramas ya borradas, cuyo nombre se recupera de los mensajes de merge), bifurcaciones y flechas de merge, modo compacto o cronológico, zoom (Ctrl+rueda) y arrastre, filtro que resalta coincidencias, Ctrl+clic para marcar y comparar dos commits. También hay vista de lista |
+| Historial | Gráfico de ramas vertical con columnas Gráfico, Descripción, Fecha, Autor y Commit: ramas locales, remotas y ya borradas (su nombre se recupera de los mensajes de merge), bifurcaciones y flechas de merge, separación de ramas ajustable (Ctrl+rueda), filtro que resalta coincidencias, Ctrl+clic para marcar y comparar dos commits |
 | Búsqueda | En todo el historial con Git: por mensaje, autor, contenido añadido o quitado (`-S`), diff por expresión regular (`-G`) o ruta |
 | Cambios | Preparar o quitar archivos, bloques o líneas sueltas; descartar (los archivos sin seguimiento van a la papelera); ignorar en `.gitignore`; multiselección y teclado |
 | Diff | Resaltado de palabras cambiadas, ignorar espacios, líneas de contexto, comparación visual de imágenes, herramienta de diff externa |
 | Commit | Contador de 72 caracteres, amend con aviso si ya está publicado, push al confirmar, firma GPG/SSH, plantilla `commit.template` |
 | Historial de archivo y blame | Historial que sigue renombrados; blame por líneas, en la versión actual o en cualquier commit |
 | Rebase interactivo | Reordenar, cambiar mensajes, combinar (squash/fixup), parar para editar y eliminar commits, sin editor |
-| Ramas y operaciones | Crear, renombrar, eliminar (local y remota), merge, rebase, cherry-pick, revert, reset soft/mixed/hard, pull (merge o rebase), push (upstream, etiquetas, force-with-lease), fetch manual o automático |
+| Ramas y operaciones | Ramas agrupadas en carpetas por prefijo (`feature/`, `hotfix/`…); crear, renombrar, eliminar (local y remota), merge, rebase, cherry-pick, revert, reset soft/mixed/hard, pull (merge o rebase), push (upstream, etiquetas, force-with-lease), fetch manual o automático |
 | Conflictos | Barra de estado con Abortar / Continuar / Saltar, marcadores resaltados, «usar la mía / la suya», herramienta de fusión externa |
 | Reflog | Todos los movimientos de HEAD, para recuperar commits perdidos tras un reset o un rebase |
 | git-flow | Features, releases y hotfixes sin instalar nada, compatible con la configuración de git-flow (AVH) |
@@ -67,7 +67,7 @@ crates/codesprout-core/   motor Git (sin interfaz)
   src/runner.rs           ejecuta git sin shell, con cancelación, progreso y ayudante de credenciales
   src/repo.rs             estado, refs, log, diffs y todas las operaciones básicas
   src/diff.rs             parseo de diffs, parches parciales, resaltado por palabras, conflictos
-  src/explorer.rs         disposición del explorador de ramas (carriles, columnas, filas, conexiones)
+  src/explorer.rs         disposición del gráfico de ramas (carriles, columnas, filas, conexiones)
   src/history.rs          historial de archivo, blame, búsqueda y reflog
   src/rebase.rs           rebase interactivo
   src/flow.rs             git-flow
@@ -79,7 +79,7 @@ crates/codesprout-app/    aplicación de escritorio (egui)
   src/app.rs              estado, pestañas, barra de herramientas, refresco, vigilancia de archivos
   src/actions.rs          operaciones lanzadas desde la interfaz
   src/dialogs.rs          diálogos
-  src/views/              historial y explorador, cambios, diff, vistas auxiliares, inicio
+  src/views/              historial y gráfico, cambios, diff, vistas auxiliares, inicio
   src/askpass.rs          diálogo de credenciales que usan Git y SSH
 ```
 

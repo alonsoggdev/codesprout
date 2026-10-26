@@ -299,9 +299,8 @@ impl App {
     pub fn refresh_tab(&mut self, idx: usize, full: bool) {
         let max = self.store.settings.max_commits;
         let all = self.store.settings.all_branches;
-        // vertical shows one commit per row next to its text, so it is always chronological
-        let s = &self.store.settings;
-        let mode = if s.chronological || s.vertical { ColumnMode::Chronological } else { ColumnMode::Compact };
+        // one commit per row next to its text, so always chronological
+        let mode = ColumnMode::Chronological;
         let Some(t) = self.tabs.get_mut(idx) else { return };
         if t.refreshing {
             t.refresh_again = true;

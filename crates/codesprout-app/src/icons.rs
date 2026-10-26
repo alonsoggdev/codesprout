@@ -36,7 +36,6 @@ pub enum Icon {
     Flow,
     PullRequest,
     Graph,
-    List,
     Target,
     ChevronUp,
     Box,
@@ -222,12 +221,6 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             bezier(p, at(3.0, 4.0), at(5.0, 4.0), at(4.0, 11.0), at(6.0, 11.0), st);
             p.circle_filled(at(9.0, 4.0), 1.6 * u, color);
             p.circle_filled(at(10.0, 11.0), 1.6 * u, color);
-        }
-        Icon::List => {
-            for y in [4.0, 8.0, 12.0] {
-                p.circle_filled(at(2.5, y), 1.0 * u, color);
-                line(p, at(5.0, y), at(14.0, y), st);
-            }
         }
         Icon::Target => {
             p.circle_stroke(at(8.0, 8.0), 5.5 * u, st);

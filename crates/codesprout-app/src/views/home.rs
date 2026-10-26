@@ -29,7 +29,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(vec2((w * 0.36).clamp(280.0, 420.0), ui.available_height()), Layout::top_down(Align::Min), |ui| {
                 ui.label(RichText::new("CodeSprout").size(30.0).strong());
-                ui.label(RichText::new("Tu cliente Git: explorador de ramas, preparación por líneas, rebase interactivo, git-flow y pull requests.").color(c.text2));
+                ui.label(RichText::new("Tu cliente Git: historial con gráfico de ramas, preparación por líneas, rebase interactivo, git-flow y pull requests.").color(c.text2));
                 ui.add_space(18.0);
                 if card(ui, Icon::Fetch, "Clonar repositorio", "Desde una URL o tus repos de GitHub/GitLab/Bitbucket") {
                     defer.push(Box::new(|a| a.open_clone(None)));

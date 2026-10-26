@@ -15,13 +15,6 @@ pub enum ThemePref {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum HistoryMode {
-    #[default]
-    Explorer,
-    List,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ActionScope {
     #[default]
     Commit,
@@ -58,9 +51,7 @@ pub struct Settings {
     pub all_branches: bool,
     pub pull_rebase: bool,
     pub clone_dir: String,
-    pub chronological: bool,
-    /// Branch explorer orientation: lanes as columns and time flowing downwards.
-    pub vertical: bool,
+    /// Spacing between the lanes of the history graph.
     pub zoom: f32,
     pub ignore_whitespace: bool,
     pub context_lines: u32,
@@ -70,7 +61,6 @@ pub struct Settings {
     pub changes_width: f32,
     pub collapsed: HashMap<String, bool>,
     pub custom_actions: Vec<CustomAction>,
-    pub history_mode: HistoryMode,
     pub sign_commits: bool,
     pub window: Option<[f32; 4]>,
     pub maximized: bool,
@@ -86,8 +76,6 @@ impl Default for Settings {
             all_branches: true,
             pull_rebase: false,
             clone_dir: String::new(),
-            chronological: false,
-            vertical: false,
             zoom: 1.0,
             ignore_whitespace: false,
             context_lines: 3,
@@ -97,7 +85,6 @@ impl Default for Settings {
             changes_width: 380.0,
             collapsed: HashMap::new(),
             custom_actions: vec![],
-            history_mode: HistoryMode::Explorer,
             sign_commits: false,
             window: None,
             maximized: false,

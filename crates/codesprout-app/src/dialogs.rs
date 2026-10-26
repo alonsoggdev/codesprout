@@ -23,7 +23,6 @@ pub struct SettingsState {
     theme: ThemePref,
     max_commits: String,
     auto_fetch: u32,
-    chronological: bool,
     word_diff: bool,
     sign_commits: bool,
     check_updates: bool,
@@ -119,7 +118,6 @@ impl Dialog {
             theme: s.theme,
             max_commits: s.max_commits.to_string(),
             auto_fetch: s.auto_fetch_min,
-            chronological: s.chronological,
             word_diff: s.word_diff,
             sign_commits: s.sign_commits,
             check_updates: s.check_updates,
@@ -1205,7 +1203,6 @@ impl App {
             });
             field_label(ui, "Commits a cargar en el historial (100 – 1.000.000)");
             ui.add(egui::TextEdit::singleline(&mut s.max_commits).desired_width(140.0));
-            check(ui, &mut s.chronological, "Explorador de ramas cronológico (una columna por commit)");
             check(ui, &mut s.word_diff, "Resaltar las palabras cambiadas dentro de cada línea");
             check(ui, &mut s.sign_commits, "Firmar los commits por defecto (GPG/SSH)");
             check(ui, &mut s.check_updates, "Buscar actualizaciones de CodeSprout automáticamente");
@@ -1293,11 +1290,10 @@ impl App {
                     }
                 }
                 let st = &mut self.store.settings;
-                let reload = mc != st.max_commits || s.chronological != st.chronological;
+                let reload = mc != st.max_commits;
                 st.theme = s.theme;
                 st.max_commits = mc;
                 st.auto_fetch_min = s.auto_fetch;
-                st.chronological = s.chronological;
                 st.word_diff = s.word_diff;
                 st.sign_commits = s.sign_commits;
                 st.check_updates = s.check_updates;

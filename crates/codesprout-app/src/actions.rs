@@ -608,9 +608,6 @@ impl App {
         t.selected = Some(hash.clone());
         if center {
             t.explorer.center_on = Some(hash.clone());
-            if let Some(&i) = t.commit_index.get(&hash) {
-                t.list_scroll_to = Some(i);
-            }
         }
         let key = t.key.clone();
         if hash != WORKTREE {

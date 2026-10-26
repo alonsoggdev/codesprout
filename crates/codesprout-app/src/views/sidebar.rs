@@ -9,12 +9,10 @@ use crate::repo_state::View;
 use crate::theme;
 use crate::widgets;
 
-fn item(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool, current: bool, right: Option<(String, egui::Color32)>, nested: bool) -> egui::Response {
+fn item(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool, current: bool, right: Option<(String, egui::Color32)>, depth: usize) -> egui::Response {
     let c = theme::p();
     widgets::row(ui, selected, 26.0, |ui| {
-        if nested {
-            ui.add_space(14.0);
-        }
+        ui.add_space(14.0 * depth as f32);
         icons::show(ui, icon, 14.0, if current { c.accent } else { c.muted });
         let (dir, base) = widgets::split_path(label);
         let mut job = egui::text::LayoutJob::default();
@@ -32,6 +30,49 @@ fn item(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool, current: boo
 }
 
 type Collapsed = std::collections::HashMap<String, bool>;
+
+/// Branches grouped by their `prefix/`, like Sourcetree: `feature/login` goes inside a collapsible
+/// "feature" folder (nested for deeper paths), folders first. A folder starts collapsed unless it
+/// holds the current branch.
+#[allow(clippy::too_many_arguments)]
+fn branch_tree<T: Copy>(
+    cm: &Collapsed,
+    ui: &mut egui::Ui,
+    key: &str,
+    items: &[(&str, T)],
+    is_current: &dyn Fn(T) -> bool,
+    depth: usize,
+    defer: &mut Defer,
+    leaf: &mut dyn FnMut(&mut egui::Ui, T, &str, usize, &mut Defer),
+) {
+    let mut folders: Vec<(&str, Vec<(&str, T)>)> = Vec::new();
+    let mut leaves = Vec::new();
+    for &(name, v) in items {
+        match name.split_once('/') {
+            Some((dir, rest)) => match folders.iter_mut().find(|f| f.0 == dir) {
+                Some(f) => f.1.push((rest, v)),
+                None => folders.push((dir, vec![(rest, v)])),
+            },
+            None => leaves.push((name, v)),
+        }
+    }
+    for (dir, children) in &folders {
+        let k = format!("{key}/{dir}");
+        let collapsed = cm.get(&k).copied().unwrap_or_else(|| !children.iter().any(|&(_, v)| is_current(v)));
+        let r = item(ui, if collapsed { Icon::ChevronRight } else { Icon::ChevronDown }, dir, false, false, None, depth);
+        if r.clicked() {
+            defer.push(Box::new(move |a| {
+                a.store.settings.collapsed.insert(k, !collapsed);
+                a.persist();
+            }));
+        } else if !collapsed {
+            branch_tree(cm, ui, &format!("{key}/{dir}"), children, is_current, depth + 1, defer, leaf);
+        }
+    }
+    for &(name, v) in &leaves {
+        leaf(ui, v, name, depth, defer);
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn section(cm: &Collapsed, ui: &mut egui::Ui, key: &str, title: &str, count: Option<usize>, add: Option<(&str, Box<dyn FnOnce(&mut App)>)>, defer: &mut Defer, body: impl FnOnce(&mut egui::Ui, &mut Defer)) {
@@ -99,26 +140,27 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
 
     section(&cm, ui, "workspace", "Área de trabajo", None, None, defer, |ui, defer| {
         let pill = (n > 0).then(|| (n.to_string(), c.accent));
-        if item(ui, Icon::Changes, "Cambios", view == View::Changes, false, pill, false).on_hover_text("Cambios en el directorio de trabajo (Ctrl+1)").clicked() {
+        if item(ui, Icon::Changes, "Cambios", view == View::Changes, false, pill, 0).on_hover_text("Cambios en el directorio de trabajo (Ctrl+1)").clicked() {
             defer.push(Box::new(|a| a.set_view(View::Changes)));
         }
-        if item(ui, Icon::Graph, "Historial", view == View::History, false, None, false).on_hover_text("Explorador de ramas (Ctrl+2)").clicked() {
+        if item(ui, Icon::Graph, "Historial", view == View::History, false, None, 0).on_hover_text("Historial de commits (Ctrl+2)").clicked() {
             defer.push(Box::new(|a| a.set_view(View::History)));
         }
-        if item(ui, Icon::History, "Reflog", view == View::Reflog, false, None, false).on_hover_text("Todo lo que ha pasado por HEAD: recupera commits perdidos").clicked() {
+        if item(ui, Icon::History, "Reflog", view == View::Reflog, false, None, 0).on_hover_text("Todo lo que ha pasado por HEAD: recupera commits perdidos").clicked() {
             defer.push(Box::new(|a| a.set_view(View::Reflog)));
         }
-        if item(ui, Icon::PullRequest, "Pull requests", view == View::PullRequests, false, pr_count.filter(|&x| x > 0).map(|x| (x.to_string(), c.purple)), false).clicked() {
+        if item(ui, Icon::PullRequest, "Pull requests", view == View::PullRequests, false, pr_count.filter(|&x| x > 0).map(|x| (x.to_string(), c.purple)), 0).clicked() {
             defer.push(Box::new(|a| a.set_view(View::PullRequests)));
         }
     });
 
     let has_head = refs.head.is_some();
-    section(&cm, ui, "branches", "Ramas", Some(refs.local.len()), has_head.then(|| ("Nueva rama", Box::new(|a: &mut App| a.open_new_branch(None)) as Box<dyn FnOnce(&mut App)>)), defer, |ui, defer| {
+    section(&cm, ui, "branches", "Ramas", None, has_head.then(|| ("Nueva rama", Box::new(|a: &mut App| a.open_new_branch(None)) as Box<dyn FnOnce(&mut App)>)), defer, |ui, defer| {
         if refs.local.is_empty() {
             ui.label(widgets::small("Aún no hay ramas"));
         }
-        for b in &refs.local {
+        let items: Vec<(&str, &codesprout_core::LocalBranch)> = refs.local.iter().map(|b| (b.name.as_str(), b)).collect();
+        branch_tree(&cm, ui, "branchdir", &items, &|b| b.current, 0, defer, &mut |ui, b, label, depth, defer| {
             let track = if b.gone {
                 Some(("remota eliminada".to_string(), c.red))
             } else if b.ahead > 0 || b.behind > 0 {
@@ -133,7 +175,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
             } else {
                 None
             };
-            let r = item(ui, if b.current { Icon::Check } else { Icon::Branch }, &b.name, false, b.current, track, false);
+            let r = item(ui, if b.current { Icon::Check } else { Icon::Branch }, label, false, b.current, track, depth);
             let tip = format!("{}{}\nDoble clic para cambiar a esta rama", b.name, b.upstream.as_ref().map(|u| format!(" → {u}")).unwrap_or_default());
             let r = r.on_hover_text(tip);
             let (hash, name) = (b.hash.clone(), b.name.clone());
@@ -146,17 +188,17 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
             }
             let current = b.current;
             r.context_menu(|ui| super::history::branch_menu(ui, &name, &hash, current, defer));
-        }
+        });
     });
 
-    section(&cm, ui, "remotes", "Remotos", Some(refs.remotes.len()), Some(("Añadir remoto", Box::new(|a: &mut App| a.open_add_remote()))), defer, |ui, defer| {
+    section(&cm, ui, "remotes", "Remotos", None, Some(("Añadir remoto", Box::new(|a: &mut App| a.open_add_remote()))), defer, |ui, defer| {
         if refs.remotes.is_empty() {
             ui.label(widgets::small("Sin remotos"));
         }
         for rn in &refs.remotes {
             let key = format!("remote:{rn}");
             let collapsed = cm.get(&key).copied().unwrap_or(false);
-            let r = item(ui, if collapsed { Icon::ChevronRight } else { Icon::ChevronDown }, rn, false, false, None, false);
+            let r = item(ui, if collapsed { Icon::ChevronRight } else { Icon::ChevronDown }, rn, false, false, None, 0);
             if r.clicked() {
                 let k = key.clone();
                 defer.push(Box::new(move |a| {
@@ -211,8 +253,9 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
                 if list.is_empty() {
                     ui.label(widgets::small("      Sin ramas (haz fetch)"));
                 }
-                for rb in list {
-                    let r = item(ui, Icon::Cloud, &rb.branch, false, false, None, true).on_hover_text(format!("{}\nDoble clic para crear una rama local y cambiar a ella", rb.name));
+                let items: Vec<(&str, &codesprout_core::RemoteBranch)> = list.into_iter().map(|rb| (rb.branch.as_str(), rb)).collect();
+                branch_tree(&cm, ui, &format!("remotedir:{rn}"), &items, &|_| false, 1, defer, &mut |ui, rb, label, depth, defer| {
+                    let r = item(ui, Icon::Cloud, label, false, false, None, depth).on_hover_text(format!("{}\nDoble clic para crear una rama local y cambiar a ella", rb.name));
                     if r.double_clicked() {
                         let (n, b) = (rb.name.clone(), rb.branch.clone());
                         defer.push(Box::new(move |a| a.checkout_remote_branch(n, b)));
@@ -222,7 +265,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
                     }
                     let rb = rb.clone();
                     r.context_menu(|ui| super::history::remote_branch_menu(ui, &rb, defer));
-                }
+                });
             }
         }
     });
@@ -235,7 +278,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
             ui.label(widgets::small("Sin etiquetas"));
         }
         for tg in &refs.tags {
-            let r = item(ui, Icon::Tag, &tg.name, false, false, None, false);
+            let r = item(ui, Icon::Tag, &tg.name, false, false, None, 0);
             if r.clicked() {
                 let h = tg.hash.clone();
                 defer.push(Box::new(move |a| a.reveal_commit(&h)));
@@ -282,7 +325,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
         for s in &refs.stashes {
             let label = s.message.split_once(": ").map(|x| x.1).unwrap_or(&s.message).to_string();
             let sel = view == View::History && selected_hash.as_deref() == Some(s.hash.as_str());
-            let r = item(ui, Icon::Stash, &label, sel, false, None, false).on_hover_text(format!("{}: {}\nDoble clic para aplicar", s.reference, s.message));
+            let r = item(ui, Icon::Stash, &label, sel, false, None, 0).on_hover_text(format!("{}: {}\nDoble clic para aplicar", s.reference, s.message));
             let (h, rf, msg) = (s.hash.clone(), s.reference.clone(), s.message.clone());
             if r.double_clicked() {
                 let rf = rf.clone();
@@ -319,13 +362,13 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
 
     section(&cm, ui, "more", "Más", None, None, defer, |ui, defer| {
         let label = |n: Option<usize>| n.filter(|&x| x > 0).map(|x| (x.to_string(), c.muted));
-        if item(ui, Icon::Box, "Submódulos", view == View::Submodules, false, label(sub_count), false).clicked() {
+        if item(ui, Icon::Box, "Submódulos", view == View::Submodules, false, label(sub_count), 0).clicked() {
             defer.push(Box::new(|a| a.set_view(View::Submodules)));
         }
-        if item(ui, Icon::Layers, "Worktrees", view == View::Worktrees, false, label(wt_count.filter(|&x| x > 1)), false).clicked() {
+        if item(ui, Icon::Layers, "Worktrees", view == View::Worktrees, false, label(wt_count.filter(|&x| x > 1)), 0).clicked() {
             defer.push(Box::new(|a| a.set_view(View::Worktrees)));
         }
-        if item(ui, Icon::Lock, "Git LFS", view == View::Lfs, false, (!lfs).then(|| ("no instalado".to_string(), c.muted)), false).clicked() {
+        if item(ui, Icon::Lock, "Git LFS", view == View::Lfs, false, (!lfs).then(|| ("no instalado".to_string(), c.muted)), 0).clicked() {
             defer.push(Box::new(|a| a.set_view(View::Lfs)));
         }
     });

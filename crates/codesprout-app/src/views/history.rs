@@ -8,7 +8,7 @@ use super::Defer;
 use crate::app::App;
 use crate::icons::{self, Icon};
 use crate::repo_state::{RefKind, View, WORKTREE};
-use crate::store::{ActionScope, HistoryMode};
+use crate::store::ActionScope;
 use crate::theme;
 use crate::widgets;
 
@@ -46,10 +46,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
 }
 
 fn main_area(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
-    match app.store.settings.history_mode {
-        HistoryMode::Explorer => super::explorer::show(ui, app, idx, defer),
-        HistoryMode::List => list(ui, app, idx, defer),
-    }
+    super::explorer::show(ui, app, idx, defer)
 }
 
 fn header(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
@@ -57,26 +54,11 @@ fn header(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     let focus = std::mem::take(&mut app.focus_search);
     let s = &mut app.store.settings;
     let t = &mut app.tabs[idx];
-    let explorer = s.history_mode == HistoryMode::Explorer;
     egui::Frame::new().fill(c.panel).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let mut narrow = false;
         ui.horizontal(|ui| {
-            // explorer / list
-            if icons::button_sized(ui, Icon::Graph, "Explorador de ramas", 26.0, true).clicked() {
-                s.history_mode = HistoryMode::Explorer;
-                defer.push(Box::new(|a| a.persist()));
-            }
-            if explorer {
-                let r = ui.min_rect();
-                ui.painter().line_segment([egui::pos2(r.min.x + 4.0, r.max.y + 2.0), egui::pos2(r.min.x + 22.0, r.max.y + 2.0)], egui::Stroke::new(2.0_f32, c.accent));
-            }
-            if icons::button_sized(ui, Icon::List, "Lista de commits", 26.0, true).clicked() {
-                s.history_mode = HistoryMode::List;
-                defer.push(Box::new(|a| a.persist()));
-            }
-            ui.separator();
-            // quick filter (highlights in the explorer, filters the list)
+            // quick filter (dims the commits that don't match)
             icons::show(ui, Icon::Search, 14.0, c.muted);
             let r = ui.add(egui::TextEdit::singleline(&mut t.explorer.filter).hint_text("Filtrar: mensaje, autor, hash, rama…").desired_width(220.0));
             if focus {
@@ -97,62 +79,35 @@ fn header(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
             if enter || ui.add_enabled(!t.search.query.trim().is_empty(), egui::Button::new("Buscar")).clicked() {
                 defer.push(Box::new(|a| a.run_search()));
             }
-            // the controls on the right need about 620 px
-            narrow = ui.available_width() < 620.0;
+            // the controls on the right need about 300 px
+            narrow = ui.available_width() < 300.0;
             if !narrow {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| view_controls(ui, s, t, explorer, defer));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| view_controls(ui, s, t, defer));
             }
         });
         if narrow {
             // not enough room on one line: the view controls go on a second one
             ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| view_controls(ui, s, t, explorer, defer));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| view_controls(ui, s, t, defer));
             });
         }
     });
 }
 
-/// Orientation, zoom, "all branches" and "go to HEAD" (laid out right to left).
-fn view_controls(ui: &mut egui::Ui, s: &mut crate::store::Settings, t: &mut crate::repo_state::RepoTab, explorer: bool, defer: &mut Defer) {
+/// Lane spacing, "all branches" and "go to HEAD" (laid out right to left).
+fn view_controls(ui: &mut egui::Ui, s: &mut crate::store::Settings, t: &mut crate::repo_state::RepoTab, defer: &mut Defer) {
     if icons::button(ui, Icon::Target, "Ir a HEAD").clicked() {
         if let Some(h) = t.refs.as_ref().and_then(|r| r.head.clone()) {
             defer.push(Box::new(move |a| a.select_commit(h, true)));
         }
     }
-    if explorer {
-        if icons::button(ui, Icon::Plus, "Acercar").clicked() {
-            s.zoom = (s.zoom * 1.2).min(2.5);
-        }
-        if icons::button(ui, Icon::Minus, "Alejar").clicked() {
-            s.zoom = (s.zoom / 1.2).max(0.4);
-        }
-        if !s.vertical {
-            let mut chrono = s.chronological;
-            if ui.toggle_value(&mut chrono, "Cronológico").on_hover_text("Una columna por commit: izquierda a derecha es estrictamente el orden temporal").changed() {
-                s.chronological = chrono;
-                defer.push(Box::new(|a| {
-                    a.persist();
-                    a.refresh(true);
-                }));
-            }
-        }
-        ui.separator();
-        // right-to-left layout: added in reverse visual order
-        let mut vertical = s.vertical;
-        ui.selectable_value(&mut vertical, true, "Vertical").on_hover_text("Ramas en columnas, lo más reciente arriba, con el mensaje de cada commit al lado");
-        ui.selectable_value(&mut vertical, false, "Horizontal").on_hover_text("Ramas en filas, el tiempo avanza hacia la derecha");
-        if vertical != s.vertical {
-            s.vertical = vertical;
-            defer.push(Box::new(|a| {
-                for t in &mut a.tabs {
-                    t.explorer.initialized = false;
-                    t.explorer.center_on = t.selected.clone();
-                }
-                a.persist();
-                a.refresh(true);
-            }));
-        }
+    if icons::button(ui, Icon::Plus, "Separar las ramas del gráfico").clicked() {
+        s.zoom = (s.zoom * 1.2).min(2.5);
     }
+    if icons::button(ui, Icon::Minus, "Juntar las ramas del gráfico").clicked() {
+        s.zoom = (s.zoom / 1.2).max(0.4);
+    }
+    ui.separator();
     let mut all = s.all_branches;
     if ui.checkbox(&mut all, "Todas las ramas").changed() {
         s.all_branches = all;
@@ -170,95 +125,6 @@ pub fn matches(t: &crate::repo_state::RepoTab, c: &Commit, q: &str) -> bool {
         || c.email.to_lowercase().contains(q)
         || c.hash.starts_with(q)
         || t.ref_map.get(&c.hash).is_some_and(|v| v.iter().any(|r| r.name.to_lowercase().contains(q)))
-}
-
-fn list(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
-    let c = theme::p();
-    let t = &mut app.tabs[idx];
-    if !t.loaded {
-        widgets::placeholder(ui, Icon::History, "Cargando historial…", "");
-        return;
-    }
-    let q = t.explorer.filter.trim().to_lowercase();
-    let mut rows: Vec<usize> = (0..t.commits.len()).filter(|&i| q.is_empty() || matches(t, &t.commits[i], &q)).collect();
-    let wt = t.layout.worktree.is_some() && q.is_empty();
-    if t.commits.is_empty() && !wt {
-        widgets::placeholder(ui, Icon::Commit, "Sin commits", "Este repositorio todavía no tiene commits. Prepara archivos en «Cambios» y crea el primero.");
-        return;
-    }
-    let row_h = 26.0;
-    let scroll_to = t.list_scroll_to.take();
-    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt(("list", idx));
-    if let Some(i) = scroll_to {
-        if let Some(pos) = rows.iter().position(|&r| r == i) {
-            area = area.vertical_scroll_offset(((pos + wt as usize) as f32 * row_h - 120.0).max(0.0));
-        }
-    }
-    let total = rows.len() + wt as usize;
-    if wt {
-        rows.insert(0, usize::MAX);
-    }
-    area.show_rows(ui, row_h, total, |ui, range| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        for k in range {
-            let i = rows[k];
-            if i == usize::MAX {
-                let n = t.change_count();
-                let sel = t.selected.as_deref() == Some(WORKTREE);
-                let r = widgets::row(ui, sel, row_h, |ui| {
-                    ui.add_space(18.0);
-                    ui.label(RichText::new(format!("Cambios sin confirmar ({n})")).italics().color(c.yellow));
-                });
-                if r.clicked() {
-                    t.selected = Some(WORKTREE.into());
-                }
-                if r.double_clicked() {
-                    defer.push(Box::new(|a| a.set_view(View::Changes)));
-                }
-                continue;
-            }
-            let cm = &t.commits[i];
-            let sel = t.selected.as_deref() == Some(cm.hash.as_str());
-            let cmp = t.compare_with.as_deref() == Some(cm.hash.as_str());
-            let lane = t.layout.nodes.get(i).and_then(|n| t.layout.lanes.get(n.lane));
-            let color = lane.map_or(c.accent, |l| theme::lane_color(l.color));
-            let is_head = t.refs.as_ref().and_then(|r| r.head.as_deref()) == Some(cm.hash.as_str());
-            let r = widgets::row(ui, sel || cmp, row_h, |ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), if is_head { 5.5 } else { 4.5 }, color);
-                if cmp {
-                    ui.painter().circle_stroke(rect.center(), 7.0, egui::Stroke::new(1.5_f32, c.yellow));
-                }
-                ref_badges(ui, t.ref_map.get(&cm.hash));
-                let w = ui.available_width();
-                ui.allocate_ui_with_layout(vec2((w - 330.0).max(60.0), row_h), Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(&cm.subject).truncate().selectable(false));
-                });
-                ui.allocate_ui_with_layout(vec2(140.0, row_h), Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(&cm.author).color(c.text2)).truncate().selectable(false));
-                });
-                ui.allocate_ui_with_layout(vec2(110.0, row_h), Layout::left_to_right(Align::Center), |ui| {
-                    ui.label(RichText::new(widgets::rel_time(cm.time)).color(c.muted).size(12.0)).on_hover_text(widgets::full_time(cm.time));
-                });
-                ui.label(RichText::new(&cm.hash[..8]).font(theme::mono(11.5)).color(c.muted));
-            });
-            let hash = cm.hash.clone();
-            if r.clicked() {
-                if ui.input(|i| i.modifiers.command) {
-                    t.compare_with = Some(hash.clone());
-                } else {
-                    let h = hash.clone();
-                    defer.push(Box::new(move |a| a.select_commit(h, false)));
-                }
-            }
-            if r.double_clicked() {
-                let h = hash.clone();
-                defer.push(Box::new(move |a| double_click_commit(a, h)));
-            }
-            let commit = cm.clone();
-            r.context_menu(|ui| commit_menu(ui, &commit, defer));
-        }
-    });
 }
 
 pub fn ref_badges(ui: &mut egui::Ui, refs: Option<&Vec<crate::repo_state::RefBadge>>) {
@@ -365,7 +231,7 @@ pub fn detail(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         if t.detail_loading {
             ui.centered_and_justified(|ui| ui.spinner());
         } else {
-            widgets::placeholder(ui, Icon::Commit, "Selecciona un commit", "Haz clic en un nodo del explorador");
+            widgets::placeholder(ui, Icon::Commit, "Selecciona un commit", "Haz clic en un commit del historial");
         }
         return;
     };
