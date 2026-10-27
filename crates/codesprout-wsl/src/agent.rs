@@ -81,10 +81,19 @@ fn hello() -> Hello {
         .and_then(|p| p.strip_suffix("c/").or_else(|| p.strip_suffix('c')).map(str::to_string))
         .filter(|p| p.starts_with('/'))
         .unwrap_or_else(|| "/mnt/".into());
+    let helpers = output("git", &["config", "--get-all", "credential.helper"]).unwrap_or_default();
+    let exec_path = output("git", &["--exec-path"]).map(std::path::PathBuf::from);
+    let program_exists = |p: &str| {
+        if p.starts_with('/') {
+            return std::path::Path::new(p).is_file();
+        }
+        exec_path.as_ref().is_some_and(|d| d.join(p).is_file())
+            || std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(p).is_file()))
+    };
     Hello {
         version: env!("CARGO_PKG_VERSION").into(),
         git: output("git", &["--version"]),
-        credential_helper: output("git", &["config", "--get-all", "credential.helper"]).is_some_and(|s| !s.is_empty()),
+        credential_helper: codesprout_wsl::usable_helper(helpers.lines(), program_exists),
         mount: if mount.ends_with('/') { mount } else { format!("{mount}/") },
         home,
     }

@@ -216,7 +216,13 @@ fn start(distro: &str) -> Result<Session> {
 
 /// What the agent's hello says, asked through `wsl.exe` (mode without agent).
 fn probe(distro: &str) -> Result<Hello> {
-    const SCRIPT: &str = r#"printf '%s\n' "$HOME"; wslpath -u 'C:\' 2>/dev/null || echo /mnt/c/; git --version 2>/dev/null || echo; git config --get-all credential.helper 2>/dev/null | head -n1"#;
+    // the last line says whether a configured credential helper can run (as usable_helper)
+    const SCRIPT: &str = r#"printf '%s\n' "$HOME"; wslpath -u 'C:\' 2>/dev/null || echo /mnt/c/; git --version 2>/dev/null || echo
+ep=$(git --exec-path 2>/dev/null)
+git config --get-all credential.helper 2>/dev/null | { ok=0; while IFS= read -r h; do p=${h%% *}; case "$h" in
+  "") ok=0;; '!'*) ok=1;; /*) [ -f "$p" ] && ok=1;;
+  *) { [ -f "$ep/git-credential-$p" ] || command -v "git-credential-$p" >/dev/null; } && ok=1;;
+esac; done; echo $ok; }"#;
     let o = wsl(distro).args(["--cd", "~", "--exec", "/bin/sh", "-c", SCRIPT]).stdin(Stdio::null()).output().context("No se pudo ejecutar wsl.exe")?;
     if !o.status.success() {
         bail!("No se pudo iniciar {distro} en WSL: {}", String::from_utf8_lossy(&o.stderr).trim());
@@ -227,7 +233,7 @@ fn probe(distro: &str) -> Result<Hello> {
     let mount = lines.next().unwrap_or("/mnt/c/");
     let mount = mount.strip_suffix("c/").unwrap_or("/mnt/").to_string();
     let git = lines.next().filter(|l| !l.is_empty()).map(str::to_string);
-    let credential_helper = lines.next().is_some_and(|l| !l.is_empty());
+    let credential_helper = lines.next() == Some("1");
     Ok(Hello { version: String::new(), home, mount, git, credential_helper })
 }
 
@@ -364,10 +370,11 @@ pub fn run(loc: &Location, args: &[&str], opts: &Opts) -> Result<Output> {
     }
     let mut full: Vec<String> = runner::BASE_ARGS.iter().map(|a| a.to_string()).collect();
     if !s.info.credential_helper {
-        // no helper in Linux: use Windows' Git Credential Manager, only for this command
+        // No helper that works in Linux: use Windows' Git Credential Manager (the accounts the
+        // user already signed in to), only for this command. The empty value first drops the
+        // configured ones, e.g. a `libsecret` that is not installed and only prints errors.
         if let Some(gcm) = crate::credentials::windows_gcm_exe().and_then(|p| to_linux(&s.distro, &s.info.mount, &p.to_string_lossy())) {
-            full.push("-c".into());
-            full.push(format!("credential.helper={}", shell_escape(&gcm)));
+            full.extend(["-c".into(), "credential.helper=".into(), "-c".into(), format!("credential.helper={}", shell_escape(&gcm))]);
         }
     }
     full.extend(args.iter().map(|a| a.to_string()));
@@ -405,7 +412,8 @@ fn shell_escape(s: &str) -> String {
 
 fn run_agent(agent: &Arc<Agent>, loc: &Location, args: Vec<String>, mut env: Vec<(String, String)>, opts: &Opts) -> Result<Output> {
     // so the askpass window (a Windows program) gets the flag through WSL interop
-    env.push(("WSLENV".into(), "CODESPROUT_ASKPASS".into()));
+    let extra = env.iter().rev().find(|(k, _)| k == "WSLENV").map(|(_, v)| format!(":{v}")).unwrap_or_default();
+    env.push(("WSLENV".into(), format!("CODESPROUT_ASKPASS{extra}")));
     let id = agent.id();
     let req = Request::Run { id, cwd: loc.path.clone(), args, env, max_buffer: opts.max_buffer, progress: opts.op.is_some_and(|o| o.has_progress()) };
     let rx = agent.request(id, &req, opts.input.unwrap_or_default())?;

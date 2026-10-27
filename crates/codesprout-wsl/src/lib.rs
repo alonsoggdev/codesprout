@@ -47,7 +47,7 @@ pub struct Hello {
     pub mount: String,
     /// `git --version`, or `None` if git is not installed.
     pub git: Option<String>,
-    /// Whether git already has a `credential.helper` configured.
+    /// Whether git has a `credential.helper` it can actually run (see [`usable_helper`]).
     pub credential_helper: bool,
 }
 
@@ -85,6 +85,26 @@ pub fn read_frame<T: DeserializeOwned>(r: &mut impl Read) -> io::Result<Option<(
     Ok(Some((header, payload)))
 }
 
+/// Whether any of the configured `credential.helper` values (in order, as `git config --get-all`
+/// prints them) can run. A helper that is configured but not installed, like the common
+/// `libsecret` without its binary, only makes git print an error and fall back to a password
+/// prompt, so it does not count. `program_exists` answers for `git-credential-<name>` or a path.
+pub fn usable_helper<'a>(values: impl IntoIterator<Item = &'a str>, program_exists: impl Fn(&str) -> bool) -> bool {
+    let mut usable = false;
+    for v in values {
+        let v = v.trim();
+        let program = v.split_whitespace().next().unwrap_or("");
+        usable = match v {
+            // an empty value resets the list
+            "" => false,
+            _ if v.starts_with('!') => true,
+            _ if program.starts_with('/') => usable || program_exists(program),
+            _ => usable || program_exists(&format!("git-credential-{program}")),
+        };
+    }
+    usable
+}
+
 /// Changes under these paths don't affect what the app shows (git's own bookkeeping).
 pub fn is_relevant_change(path: &str) -> bool {
     let s = path.replace('\\', "/");
@@ -108,6 +128,21 @@ mod tests {
         let (ev, _): (Event, _) = read_frame(&mut r).unwrap().unwrap();
         assert!(matches!(ev, Event::Changed { id: 3 }));
         assert!(read_frame::<Event>(&mut r).unwrap().is_none());
+    }
+
+    #[test]
+    fn only_helpers_that_run_count() {
+        let installed = |p: &str| ["git-credential-store", "git-credential-cache", "/usr/bin/pass-helper"].contains(&p);
+        assert!(!usable_helper([], installed));
+        assert!(!usable_helper(["libsecret"], installed));
+        assert!(usable_helper(["libsecret", "store"], installed));
+        assert!(usable_helper(["cache --timeout=3600"], installed));
+        assert!(usable_helper(["!f() { echo password=x; }; f"], installed));
+        assert!(usable_helper(["/usr/bin/pass-helper"], installed));
+        assert!(!usable_helper(["/mnt/c/missing.exe"], installed));
+        // an empty value drops the helpers before it
+        assert!(!usable_helper(["store", ""], installed));
+        assert!(usable_helper(["", "store"], installed));
     }
 
     #[test]
