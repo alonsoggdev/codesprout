@@ -1,5 +1,6 @@
 # Publishes a GitHub release when a version tag is pushed: `git tag v2.1.0 && git push origin v2.1.0`.
-# The app's updater looks for `codesprout-windows-x64.exe` and its `.sha256` in the latest release.
+# The app's updater looks for `codesprout-windows-x64.exe` / `codesprout-linux-x64` and their
+# `.sha256` in the latest release.
 name: Release
 
 on:
@@ -10,7 +11,21 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches Cargo.toml
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "The tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($version)"
+            exit 1
+          fi
+
   windows:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,15 +33,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Check that the tag matches Cargo.toml
-        shell: bash
-        run: |
-          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "The tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($version)"
-            exit 1
-          fi
 
       - name: Test
         run: cargo test -p codesprout-core
@@ -37,7 +43,6 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
           mkdir dist
           cp target/release/codesprout.exe dist/codesprout-windows-x64.exe
           (cd dist && sha256sum codesprout-windows-x64.exe > codesprout-windows-x64.exe.sha256)
@@ -51,6 +56,58 @@ jobs:
           }
           & $iscc "/DAppVersion=$($env:GITHUB_REF_NAME.TrimStart('v'))" installer\codesprout.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  linux:
+    needs: version
+    # The oldest supported Ubuntu, so the binary's glibc requirement (2.35) also covers
+    # Ubuntu 22.04 and Debian 12 under WSL.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test -p codesprout-core
+
+      - name: Build
+        run: cargo build -p codesprout-app --release
+
+      - name: Package
+        run: |
+          mkdir -p dist pkg/CodeSprout
+          cp target/release/codesprout dist/codesprout-linux-x64
+          (cd dist && sha256sum codesprout-linux-x64 > codesprout-linux-x64.sha256)
+          cp target/release/codesprout pkg/CodeSprout/codesprout
+          cp build/icon.png pkg/CodeSprout/codesprout.png
+          cp installer/install-linux.sh pkg/CodeSprout/install.sh
+          chmod +x pkg/CodeSprout/codesprout pkg/CodeSprout/install.sh
+          tar -czf dist/CodeSprout-linux-x64.tar.gz -C pkg CodeSprout
+          cp installer/install-linux.sh dist/install-linux.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:

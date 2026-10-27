@@ -1,6 +1,6 @@
 //! Self-update from GitHub Releases. A release is tagged `vX.Y.Z` and carries the executable
 //! for each platform plus a `.sha256` file next to it. Installing swaps the running executable
-//! in place: it is renamed to `*.old` (allowed on Windows even while it runs) and the new one
+//! in place: it is renamed to `*.old` (allowed on Windows and Linux even while it runs) and the new one
 //! takes its name; the leftover is removed on the next start.
 
 use std::io::{Read, Write};
@@ -18,6 +18,8 @@ pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 pub fn asset_name() -> Option<&'static str> {
     if cfg!(all(windows, target_arch = "x86_64")) {
         Some("codesprout-windows-x64.exe")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("codesprout-linux-x64")
     } else {
         None
     }

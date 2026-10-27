@@ -28,6 +28,11 @@ fn main() {
     if std::env::var_os("CODESPROUT_ASKPASS").is_some_and(|v| !v.is_empty()) && args.len() == 2 {
         std::process::exit(askpass::run(args[1].clone()));
     }
+    // used by the Linux installer
+    if args.get(1).is_some_and(|a| a == "--version") {
+        println!("{}", codesprout_core::update::CURRENT);
+        return;
+    }
     codesprout_core::update::cleanup();
     if let Ok(exe) = std::env::current_exe() {
         codesprout_core::runner::set_helper_exe(exe);

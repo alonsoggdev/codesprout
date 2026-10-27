@@ -6,7 +6,8 @@ Cliente Git de escritorio escrito en Rust, con interfaz nativa acelerada por GPU
 
 - **Git 2.26 o superior** en el `PATH`.
 - Opcional: **Git Credential Manager** (viene con Git para Windows) para iniciar sesión con SSO, y **Git LFS**.
-- Para compilar: Rust estable (`rustup`). En Windows, las herramientas de C++ de Visual Studio.
+- En Linux (también WSL): las bibliotecas de GTK 3, EGL/OpenGL y xkbcommon-x11. El instalador las instala con `apt` si faltan.
+- Para compilar: Rust estable (`rustup`). En Windows, las herramientas de C++ de Visual Studio; en Linux, `build-essential`, `pkg-config` y `libgtk-3-dev`.
 
 ## Uso
 
@@ -16,13 +17,24 @@ cargo build -p codesprout-app --release    # genera target/release/codesprout(.e
 cargo test -p codesprout-core              # tests contra repositorios Git reales
 ```
 
+## Linux y WSL
+
+```bash
+curl -fsSL https://github.com/alonsoggdev/codesprout/releases/latest/download/install-linux.sh | bash
+```
+
+`installer/install-linux.sh` instala para tu usuario, sin root, como el instalador de Windows: el ejecutable en `~/.local/share/codesprout/`, un enlace en `~/.local/bin/codesprout` y una entrada de menú (con WSLg aparece también en el menú Inicio de Windows). Así la app puede actualizarse sola. Funciona igual desde el `CodeSprout-linux-x64.tar.gz` descomprimido (`./install.sh`), y `--uninstall` la quita. En WSL usa las fuentes de Windows desde `/mnt/c` para verse igual que en Windows.
+
 ## Publicar una versión
 
 La app busca versiones nuevas en las [releases de GitHub](https://github.com/alonsoggdev/codesprout/releases) al arrancar y cada 6 horas (se puede desactivar en Ajustes). Si hay una más nueva, el botón de la versión, arriba a la derecha, se pone verde y la app se actualiza y se reinicia sola.
 
 1. Sube `version` en `Cargo.toml` (por ejemplo, `2.1.0`) y haz commit.
 2. Crea y sube la etiqueta: `git tag v2.1.0 && git push origin main v2.1.0`.
-3. La GitHub Action `.github/workflows/release.yml` compila, pasa los tests y publica la release con `codesprout-windows-x64.exe` y su `.sha256` (los usa el actualizador) y el instalador `CodeSprout-Setup-windows-x64.exe` (Inno Setup, script en `installer/codesprout.iss`; instala por usuario, sin permisos de administrador, para que la app pueda actualizarse sola). Las novedades se generan a partir de los commits; puedes editarlas en GitHub y la app las muestra.
+3. La GitHub Action `.github/workflows/release.yml` compila en Windows y en Linux (Ubuntu 22.04, para que el binario sirva desde glibc 2.35), pasa los tests y publica la release con:
+   - `codesprout-windows-x64.exe` y `codesprout-linux-x64`, cada uno con su `.sha256` (los usa el actualizador).
+   - El instalador de Windows `CodeSprout-Setup-windows-x64.exe` (Inno Setup, script en `installer/codesprout.iss`; instala por usuario, sin permisos de administrador, para que la app pueda actualizarse sola).
+   - `CodeSprout-linux-x64.tar.gz` (ejecutable, icono e `install.sh`) e `install-linux.sh`, el instalador de Linux. Las novedades se generan a partir de los commits; puedes editarlas en GitHub y la app las muestra.
 
 ## Funciones
 

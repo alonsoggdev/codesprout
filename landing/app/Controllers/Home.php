@@ -11,6 +11,8 @@ class Home extends BaseController
         return view('landing', [
             // Unversioned asset name, so it always points to the latest release.
             'downloadUrl' => self::REPO . '/releases/latest/download/CodeSprout-Setup-windows-x64.exe',
+            'linuxUrl'    => self::REPO . '/releases/latest/download/CodeSprout-linux-x64.tar.gz',
+            'linuxCmd'    => 'curl -fsSL ' . self::REPO . '/releases/latest/download/install-linux.sh | bash',
             'releasesUrl' => self::REPO . '/releases/latest',
             'repoUrl'     => self::REPO,
             'version'     => $this->latestVersion(),

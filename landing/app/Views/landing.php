@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CodeSprout — Cliente Git para Windows</title>
+    <title>CodeSprout — Cliente Git para Windows y Linux</title>
     <meta name="description" content="CodeSprout: un cliente Git de escritorio rápido, con explorador de ramas visual. Como Sourcetree, pero mejor.">
     <link rel="icon" type="image/png" href="/img/logo.png">
     <style>
@@ -39,6 +39,29 @@
         }
         .download:hover { transform: translateY(-1px); box-shadow: 0 10px 34px rgba(91, 147, 255, 0.5); }
         .download svg { width: 20px; height: 20px; }
+        .downloads { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+        .download.secondary {
+            background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: none;
+        }
+        .download.secondary:hover { border-color: var(--accent); box-shadow: none; }
+        .wsl {
+            margin: 28px auto 0; max-width: 580px; padding: 16px 20px; text-align: left;
+            border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+        }
+        .wsl h2 { margin: 0 0 4px; font-size: 16px; }
+        .wsl p { margin: 0 0 10px; font-size: 14px; color: var(--text2); }
+        .wsl a { color: var(--accent); }
+        .cmd { display: flex; gap: 8px; align-items: stretch; }
+        .cmd code {
+            flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+            padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border);
+            font: 13px/1.5 "Cascadia Mono", Consolas, ui-monospace, monospace; color: var(--green);
+        }
+        .cmd button {
+            flex: none; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border);
+            background: var(--bg); color: var(--text2); font: inherit; font-size: 13px; cursor: pointer;
+        }
+        .cmd button:hover { color: var(--text); border-color: var(--accent); }
         .version { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
         .meta { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
         .meta a { color: var(--text2); }
@@ -77,16 +100,36 @@
         Un único ejecutable de unos 10&nbsp;MB que se actualiza solo.
     </p>
 
-    <a class="download" href="<?= esc($downloadUrl, 'attr') ?>">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></svg>
-        Descargar para Windows
-    </a>
+    <div class="downloads">
+        <a class="download" href="<?= esc($downloadUrl, 'attr') ?>">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></svg>
+            Descargar para Windows
+        </a>
+        <a class="download secondary" href="<?= esc($linuxUrl, 'attr') ?>">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 11l6 6 6-6M4 21h16"/></svg>
+            Descargar para Linux
+        </a>
+    </div>
     <?php if ($version !== null): ?>
         <p class="version">Versión <?= esc($version) ?></p>
     <?php endif ?>
     <p class="meta">
-        Windows 10/11 · 64 bits · Requiere <a href="https://git-scm.com/download/win">Git</a> ·        <a href="<?= esc($releasesUrl, 'attr') ?>">Novedades de la versión</a>
+        Windows 10/11 o Linux (también WSL) · 64 bits · Requiere <a href="https://git-scm.com/downloads">Git</a> ·
+        <a href="<?= esc($releasesUrl, 'attr') ?>">Novedades de la versión</a>
     </p>
+
+    <section class="wsl" id="linux">
+        <h2>Linux y WSL</h2>
+        <p>
+            Pega esto en tu terminal (en WSL, la de Ubuntu). Se instala para tu usuario, sin root, se actualiza sola
+            y en WSL aparece también en el menú Inicio de Windows. Si descargas el <code>.tar.gz</code>,
+            descomprímelo y ejecuta <code>./install.sh</code>.
+        </p>
+        <div class="cmd">
+            <code id="linux-cmd"><?= esc($linuxCmd) ?></code>
+            <button type="button" id="copy-cmd">Copiar</button>
+        </div>
+    </section>
 
     <!-- Branch explorer motif: one lane per branch, time flows left to right -->
     <svg class="lanes" viewBox="0 0 560 120" role="img" aria-label="Ramas como carriles: una rama sale de main y vuelve con un merge">
@@ -141,5 +184,14 @@
     <a href="#privacidad">Privacidad</a> ·
     Sourcetree es una marca de Atlassian; CodeSprout no está afiliado a Atlassian.
 </footer>
+<script>
+    document.getElementById('copy-cmd').addEventListener('click', function () {
+        var btn = this;
+        navigator.clipboard.writeText(document.getElementById('linux-cmd').textContent).then(function () {
+            btn.textContent = 'Copiado';
+            setTimeout(function () { btn.textContent = 'Copiar'; }, 1500);
+        });
+    });
+</script>
 </body>
 </html>

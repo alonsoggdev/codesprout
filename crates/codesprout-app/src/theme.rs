@@ -156,14 +156,14 @@ pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
 
-/// Loads Segoe UI / Cascadia from the system when available (native look on Windows),
-/// keeping egui's bundled fonts as fallback for symbols.
+/// Loads Segoe UI / Cascadia from the system when available (native look on Windows, also under
+/// WSL through `/mnt/c`), keeping egui's bundled fonts as fallback for symbols.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let candidates: &[(&str, &[&str])] = &[
-        ("ui", &["C:\\Windows\\Fonts\\segoeui.ttf", "/System/Library/Fonts/SFNS.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf"]),
-        ("mono", &["C:\\Windows\\Fonts\\CascadiaMono.ttf", "C:\\Windows\\Fonts\\consola.ttf", "/System/Library/Fonts/SFNSMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]),
-        ("symbols", &["C:\\Windows\\Fonts\\seguisym.ttf"]),
+        ("ui", &["C:\\Windows\\Fonts\\segoeui.ttf", "/mnt/c/Windows/Fonts/segoeui.ttf", "/System/Library/Fonts/SFNS.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]),
+        ("mono", &["C:\\Windows\\Fonts\\CascadiaMono.ttf", "C:\\Windows\\Fonts\\consola.ttf", "/mnt/c/Windows/Fonts/CascadiaMono.ttf", "/mnt/c/Windows/Fonts/consola.ttf", "/System/Library/Fonts/SFNSMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]),
+        ("symbols", &["C:\\Windows\\Fonts\\seguisym.ttf", "/mnt/c/Windows/Fonts/seguisym.ttf"]),
     ];
     for (name, paths) in candidates {
         if let Some(bytes) = paths.iter().find_map(|p| std::fs::read(p).ok()) {
