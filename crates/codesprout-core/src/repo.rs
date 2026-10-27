@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::model::*;
 use crate::runner::{self, clean_output, failure, git, out, out_opts, run, OpHandle, Opts};
+use crate::wsl;
 
 const DIFF_ARGS: &[&str] = &["--no-color", "--no-ext-diff", "--no-textconv"];
 pub const MAX_DIFF_BYTES: usize = 8 * 1024 * 1024;
@@ -89,23 +90,13 @@ pub fn resolve_repo(dir: &Path) -> Result<PathBuf> {
     if !r.ok() {
         bail!("La carpeta seleccionada no es un repositorio Git (o es un repositorio \"bare\").");
     }
-    let top = r.text().trim().to_string();
-    Ok(PathBuf::from(dunce(&top)))
-}
-
-/// Git prints forward slashes on Windows; turn them into native separators.
-fn dunce(p: &str) -> String {
-    if cfg!(windows) {
-        p.replace('/', "\\")
-    } else {
-        p.to_string()
-    }
+    Ok(wsl::native_path(&dir, r.text().trim()))
 }
 
 pub fn git_dir(repo: &Path) -> Result<PathBuf> {
     let key = format!("gitdir|{}", repo.display());
     let d = cached(key, || Ok(out(repo, &["rev-parse", "--absolute-git-dir"])?.trim().to_string()))?;
-    Ok(PathBuf::from(dunce(&d)))
+    Ok(wsl::native_path(repo, &d))
 }
 
 pub fn has_head(repo: &Path) -> bool {
@@ -589,8 +580,9 @@ pub fn clone(url: &str, dest: &Path, op: Option<&OpHandle>) -> Result<PathBuf> {
     }
     let parent = dest.parent().ok_or_else(|| anyhow!("Carpeta de destino no válida."))?;
     fs::create_dir_all(parent)?;
-    let target = dest.to_string_lossy();
-    git(parent, &["clone", "--progress", "--recurse-submodules", "--", url, &target], &Opts::op(op))?;
+    let target = wsl::arg_path(parent, dest);
+    let url = remote_url(parent, url);
+    git(parent, &["clone", "--progress", "--recurse-submodules", "--", &url, &target], &Opts::op(op))?;
     resolve_repo(dest)
 }
 
@@ -637,6 +629,11 @@ pub fn discard(repo: &Path, tracked: &[String], untracked: &[String]) -> Result<
         let mut args = vec!["checkout", "-q"];
         args.extend(FROM_STDIN);
         git(repo, &args, &Opts { input: Some(&input), ..Opts::literal() })?;
+    }
+    if wsl::locate(repo).is_some() {
+        // Windows has no recycle bin for WSL folders; they go to the distro's trash
+        let files = untracked.iter().map(|rel| safe_join(repo, rel)).collect::<Result<Vec<_>>>()?;
+        return if files.is_empty() { Ok(()) } else { wsl::trash(repo, &files) };
     }
     for rel in untracked {
         let full = safe_join(repo, rel)?;
@@ -828,6 +825,29 @@ pub fn delete_branch(repo: &Path, name: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Result of [`delete_gone_branches`].
+#[derive(Debug, Default)]
+pub struct GoneCleanup {
+    pub deleted: Vec<String>,
+    /// Branches with commits that are not merged anywhere: kept so no work is lost.
+    pub kept: Vec<String>,
+}
+
+/// Deletes the local branches whose upstream no longer exists on the remote (after a
+/// `fetch --prune`), only from `remote` when given. Uses `branch -d`, so unmerged branches stay;
+/// the checked-out branch is never touched.
+pub fn delete_gone_branches(repo: &Path, remote: Option<&str>) -> Result<GoneCleanup> {
+    let mut res = GoneCleanup::default();
+    let gone = refs(repo)?.local.into_iter().filter(|b| b.gone && !b.current && remote.is_none_or(|r| b.upstream_remote.as_deref() == Some(r)));
+    for b in gone {
+        match delete_branch(repo, &b.name, false) {
+            Ok(()) => res.deleted.push(b.name),
+            Err(_) => res.kept.push(b.name),
+        }
+    }
+    Ok(res)
+}
+
 pub fn merge(repo: &Path, reference: &str, no_ff: bool) -> Result<OpResult> {
     let mut args = vec!["merge", "--no-edit"];
     if no_ff {
@@ -1009,7 +1029,7 @@ pub fn add_remote(repo: &Path, name: &str, url: &str) -> Result<()> {
     if name.trim().is_empty() || url.trim().is_empty() {
         bail!("Indica nombre y URL del remoto.");
     }
-    git(repo, &["remote", "add", "--", name.trim(), url.trim()], &Opts::default())?;
+    git(repo, &["remote", "add", "--", name.trim(), &remote_url(repo, url.trim())], &Opts::default())?;
     Ok(())
 }
 
@@ -1030,8 +1050,18 @@ pub fn set_remote_url(repo: &Path, name: &str, url: &str) -> Result<()> {
     if url.trim().is_empty() {
         bail!("Indica la URL del remoto.");
     }
-    git(repo, &["remote", "set-url", name, url.trim()], &Opts::default())?;
+    git(repo, &["remote", "set-url", name, &remote_url(repo, url.trim())], &Opts::default())?;
     Ok(())
+}
+
+/// A remote's URL as git will store it: a local repository given as a Windows path becomes the
+/// path the git that runs for `repo` understands (a Linux path for repositories in WSL).
+pub(crate) fn remote_url(repo: &Path, url: &str) -> String {
+    if Path::new(url).is_absolute() {
+        wsl::arg_path(repo, Path::new(url))
+    } else {
+        url.to_string()
+    }
 }
 
 pub fn set_identity(repo: &Path, name: &str, email: &str, global: bool) -> Result<()> {

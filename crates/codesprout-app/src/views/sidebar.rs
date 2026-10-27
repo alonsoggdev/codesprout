@@ -210,7 +210,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, idx: usize, defer: &mut Defer) {
             r.context_menu(|ui| {
                 if ui.button(format!("Fetch de {name}")).clicked() {
                     let n = name.clone();
-                    defer.push(Box::new(move |a| a.do_fetch(Some(n))));
+                    defer.push(Box::new(move |a| a.open_fetch(Some(n))));
                     ui.close_menu();
                 }
                 if ui.button("Editar (nombre y URL)…").clicked() {

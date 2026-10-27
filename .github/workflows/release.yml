@@ -31,13 +31,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Test
-        run: cargo test -p codesprout-core
+        run: cargo test -p codesprout-core -p codesprout-wsl
+
+      # Static Linux binary (linked with rust-lld, see .cargo/config.toml) that the app embeds
+      # to run git inside WSL; build.rs fails the build below if it is missing.
+      - name: WSL agent
+        run: cargo build -p codesprout-wsl --release --target x86_64-unknown-linux-musl
 
       - name: Build
+        env:
+          CODESPROUT_WSL_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/codesprout-wsl-agent
         run: cargo build -p codesprout-app --release
 
       - name: Package
@@ -78,7 +87,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test
-        run: cargo test -p codesprout-core
+        run: cargo test -p codesprout-core -p codesprout-wsl
 
       - name: Build
         run: cargo build -p codesprout-app --release

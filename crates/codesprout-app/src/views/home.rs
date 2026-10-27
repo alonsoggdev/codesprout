@@ -42,6 +42,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     }));
                 }
+                for distro in &app.wsl_distros {
+                    ui.add_space(8.0);
+                    if card(ui, Icon::Folder, &format!("Abrir desde {distro}"), "Un repositorio dentro de WSL, con el Git de Linux") {
+                        let d = distro.clone();
+                        defer.push(Box::new(move |a| open_from_wsl(a, d)));
+                    }
+                }
                 ui.add_space(8.0);
                 if card(ui, Icon::Plus, "Crear repositorio nuevo", "Inicializa Git en una carpeta") {
                     defer.push(Box::new(create_new));
@@ -112,6 +119,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         });
     });
     run(app, defer);
+}
+
+/// Folder picker starting in the distro's home (starting the distro if needed).
+fn open_from_wsl(app: &mut App, distro: String) {
+    app.toast(format!("Abriendo {distro}…"), ToastKind::Info);
+    app.bus.spawn(
+        move || codesprout_core::wsl::home(&distro),
+        |app, r| match r {
+            Ok(home) => {
+                app.toasts.clear();
+                if let Some(d) = crate::actions::pick_folder_in("Selecciona la carpeta del repositorio", &home) {
+                    app.open_repo(d);
+                }
+            }
+            Err(e) => app.toast(e.to_string(), ToastKind::Error),
+        },
+    );
 }
 
 fn create_new(app: &mut App) {

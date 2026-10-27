@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::model::OpResult;
 use crate::repo::{config_value, conflict_aware, safe_join};
 use crate::runner::{self, git, out, run, OpHandle, Opts};
+use crate::wsl;
 
 // ---------------------------------------------------------------- submodules
 
@@ -88,7 +89,8 @@ pub fn submodule_add(repo: &Path, url: &str, path: &str, op: Option<&OpHandle>) 
     if url.trim().is_empty() || path.trim().is_empty() {
         bail!("Indica la URL y la carpeta del submódulo.");
     }
-    git(repo, &["submodule", "add", "--progress", "--", url.trim(), path.trim()], &Opts::op(op))?;
+    let url = crate::repo::remote_url(repo, url.trim());
+    git(repo, &["submodule", "add", "--progress", "--", &url, path.trim()], &Opts::op(op))?;
     Ok(())
 }
 
@@ -226,7 +228,7 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>> {
         for line in block.lines() {
             let (k, v) = line.split_once(' ').unwrap_or((line, ""));
             match k {
-                "worktree" => w.path = PathBuf::from(if cfg!(windows) { v.replace('/', "\\") } else { v.to_string() }),
+                "worktree" => w.path = wsl::native_path(repo, v),
                 "HEAD" => w.head = v.into(),
                 "branch" => w.branch = Some(v.trim_start_matches("refs/heads/").into()),
                 "locked" => w.locked = true,
@@ -243,7 +245,7 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>> {
 }
 
 pub fn worktree_add(repo: &Path, path: &Path, branch: &str, new_branch: bool) -> Result<()> {
-    let p = path.to_string_lossy();
+    let p = wsl::arg_path(repo, path);
     let args: Vec<&str> = if new_branch {
         vec!["worktree", "add", "-b", branch, &p]
     } else {
@@ -254,7 +256,7 @@ pub fn worktree_add(repo: &Path, path: &Path, branch: &str, new_branch: bool) ->
 }
 
 pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
-    let p = path.to_string_lossy();
+    let p = wsl::arg_path(repo, path);
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
@@ -274,12 +276,12 @@ pub fn worktree_prune(repo: &Path) -> Result<()> {
 /// Writes `git format-patch` files for the given commits (oldest first) into `dir`.
 pub fn create_patches(repo: &Path, hashes: &[String], dir: &Path) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
-    let d = dir.to_string_lossy();
+    let d = wsl::arg_path(repo, dir);
     let mut files = Vec::new();
     for (i, h) in hashes.iter().enumerate() {
         let n = format!("--start-number={}", i + 1);
         let text = out(repo, &["format-patch", "-1", &n, "-o", &d, h])?;
-        files.extend(text.lines().filter(|l| !l.trim().is_empty()).map(|l| PathBuf::from(l.trim())));
+        files.extend(text.lines().filter(|l| !l.trim().is_empty()).map(|l| wsl::native_path(repo, l.trim())));
     }
     Ok(files)
 }
@@ -295,7 +297,7 @@ pub fn save_diff_patch(repo: &Path, from: &str, to: &str, file: &Path) -> Result
 pub fn apply_patch_file(repo: &Path, file: &Path, three_way: bool) -> Result<OpResult> {
     let content = std::fs::read(file)?;
     let is_mbox = content.starts_with(b"From ");
-    let p = file.to_string_lossy().into_owned();
+    let p = wsl::arg_path(repo, file);
     if is_mbox {
         let mut args = vec!["am"];
         if three_way {
@@ -320,7 +322,7 @@ pub fn archive(repo: &Path, rev: &str, file: &Path) -> Result<()> {
         Some("gz") | Some("tgz") => "tar.gz",
         _ => "zip",
     };
-    let f = file.to_string_lossy();
+    let f = wsl::arg_path(repo, file);
     let format = format!("--format={fmt}");
     git(repo, &["archive", &format, "-o", &f, rev], &Opts::default())?;
     Ok(())
@@ -334,8 +336,14 @@ pub fn commit_template(repo: &Path) -> Option<String> {
     if path.is_empty() {
         return None;
     }
+    let wsl_repo = wsl::locate(repo);
     let p = if let Some(rest) = path.strip_prefix("~/") {
-        dirs_home()?.join(rest)
+        match &wsl_repo {
+            Some(loc) => wsl::home(&loc.distro).ok()?.join(rest),
+            None => dirs_home()?.join(rest),
+        }
+    } else if wsl_repo.is_some() && path.starts_with('/') {
+        wsl::native_path(repo, &path)
     } else {
         let p = PathBuf::from(&path);
         if p.is_absolute() { p } else { repo.join(p) }
@@ -385,6 +393,9 @@ pub fn mergetool(repo: &Path, path: &str) -> Result<OpResult> {
 }
 
 fn spawn_git_detached(repo: &Path, args: &[String]) -> Result<()> {
+    if let Some(loc) = wsl::locate(repo) {
+        return wsl::spawn_detached(&loc, args);
+    }
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(repo).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     runner::hide_window(&mut cmd);

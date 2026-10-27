@@ -44,24 +44,6 @@
             background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: none;
         }
         .download.secondary:hover { border-color: var(--accent); box-shadow: none; }
-        .wsl {
-            margin: 28px auto 0; max-width: 580px; padding: 16px 20px; text-align: left;
-            border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
-        }
-        .wsl h2 { margin: 0 0 4px; font-size: 16px; }
-        .wsl p { margin: 0 0 10px; font-size: 14px; color: var(--text2); }
-        .wsl a { color: var(--accent); }
-        .cmd { display: flex; gap: 8px; align-items: stretch; }
-        .cmd code {
-            flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
-            padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border);
-            font: 13px/1.5 "Cascadia Mono", Consolas, ui-monospace, monospace; color: var(--green);
-        }
-        .cmd button {
-            flex: none; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border);
-            background: var(--bg); color: var(--text2); font: inherit; font-size: 13px; cursor: pointer;
-        }
-        .cmd button:hover { color: var(--text); border-color: var(--accent); }
         .version { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
         .meta { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
         .meta a { color: var(--text2); }
@@ -118,18 +100,6 @@
         <a href="<?= esc($releasesUrl, 'attr') ?>">Novedades de la versión</a>
     </p>
 
-    <section class="wsl" id="linux">
-        <h2>Linux y WSL</h2>
-        <p>
-            Pega esto en tu terminal (en WSL, la de Ubuntu). Se instala para tu usuario, sin root, se actualiza sola
-            y en WSL aparece también en el menú Inicio de Windows. Si descargas el <code>.tar.gz</code>,
-            descomprímelo y ejecuta <code>./install.sh</code>.
-        </p>
-        <div class="cmd">
-            <code id="linux-cmd"><?= esc($linuxCmd) ?></code>
-            <button type="button" id="copy-cmd">Copiar</button>
-        </div>
-    </section>
 
     <!-- Branch explorer motif: one lane per branch, time flows left to right -->
     <svg class="lanes" viewBox="0 0 560 120" role="img" aria-label="Ramas como carriles: una rama sale de main y vuelve con un merge">
@@ -184,14 +154,5 @@
     <a href="#privacidad">Privacidad</a> ·
     Sourcetree es una marca de Atlassian; CodeSprout no está afiliado a Atlassian.
 </footer>
-<script>
-    document.getElementById('copy-cmd').addEventListener('click', function () {
-        var btn = this;
-        navigator.clipboard.writeText(document.getElementById('linux-cmd').textContent).then(function () {
-            btn.textContent = 'Copiado';
-            setTimeout(function () { btn.textContent = 'Copiar'; }, 1500);
-        });
-    });
-</script>
 </body>
 </html>

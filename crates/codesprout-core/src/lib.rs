@@ -14,6 +14,7 @@ pub mod rebase;
 pub mod repo;
 pub mod runner;
 pub mod update;
+pub mod wsl;
 
 pub use model::*;
 pub use runner::OpHandle;

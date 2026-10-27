@@ -25,6 +25,32 @@ curl -fsSL https://github.com/alonsoggdev/codesprout/releases/latest/download/in
 
 `installer/install-linux.sh` instala para tu usuario, sin root, como el instalador de Windows: el ejecutable en `~/.local/share/codesprout/`, un enlace en `~/.local/bin/codesprout` y una entrada de menú (con WSLg aparece también en el menú Inicio de Windows). Así la app puede actualizarse sola. Funciona igual desde el `CodeSprout-linux-x64.tar.gz` descomprimido (`./install.sh`), y `--uninstall` la quita. En WSL usa las fuentes de Windows desde `/mnt/c` para verse igual que en Windows.
 
+## Repositorios dentro de WSL desde Windows
+
+La versión de Windows abre también los repositorios que viven dentro de WSL (`\\wsl.localhost\Ubuntu\home\...`) y los trabaja con **el Git de la distribución**: su configuración, sus claves SSH y sus hooks. La regla es simple: cada repositorio usa el Git del sistema donde están sus archivos, sin configurar nada.
+
+- La pantalla de inicio muestra «Abrir desde Ubuntu» (una tarjeta por distribución) y, al clonar, se puede elegir la carpeta personal de la distribución.
+- La app incrusta un pequeño agente (`crates/codesprout-wsl`, binario Linux estático) y lo instala en `~/.cache/codesprout/` la primera vez. El agente se queda abierto dentro de la distribución: ejecuta Git sin pagar un `wsl.exe` por orden (unos 100 ms cada uno), vigila los archivos con inotify (Windows no recibe avisos de cambios dentro de WSL) y manda a la papelera de Linux lo que descartas.
+- Si Git en Linux no tiene `credential.helper`, se usa el Git Credential Manager de Windows solo para esa orden, así comparte las cuentas de Windows. Las contraseñas y frases de claves SSH las pide la ventana de CodeSprout.
+- Si la distribución no tiene Git, la app ofrece instalarlo (abre una consola que pide la contraseña de sudo).
+
+En local, el agente se compila aparte; sin él la app funciona igual, pero llamando a `wsl.exe` en cada orden, unas 30 veces más lento:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+cargo build -p codesprout-wsl --release --target x86_64-unknown-linux-musl   # se enlaza con rust-lld, sin toolchain de C
+cargo build -p codesprout-app --release                                       # build.rs lo incrusta si existe
+```
+
+Los tests de integración también se pueden ejecutar contra repositorios dentro de WSL (desde PowerShell):
+
+```powershell
+wsl -d Ubuntu --exec mkdir -p /tmp/cs-tests
+$env:CODESPROUT_TEST_ROOT = '\\wsl.localhost\Ubuntu\tmp\cs-tests'
+$env:CODESPROUT_WSL_AGENT = "$PWD\target\x86_64-unknown-linux-musl\release\codesprout-wsl-agent"
+cargo test -p codesprout-core --test git
+```
+
 ## Publicar una versión
 
 La app busca versiones nuevas en las [releases de GitHub](https://github.com/alonsoggdev/codesprout/releases) al arrancar y cada 6 horas (se puede desactivar en Ajustes). Si hay una más nueva, el botón de la versión, arriba a la derecha, se pone verde y la app se actualiza y se reinicia sola.
@@ -87,6 +113,8 @@ crates/codesprout-core/   motor Git (sin interfaz)
   src/credentials.rs      inicio de sesión con Git Credential Manager
   src/hosting.rs          APIs de GitHub, GitLab y Bitbucket
   tests/git.rs            tests de integración contra repositorios reales
+  src/wsl.rs              repositorios dentro de WSL: rutas, agente y vigilancia de archivos
+crates/codesprout-wsl/    agente que corre dentro de WSL, y su protocolo con la app
 crates/codesprout-app/    aplicación de escritorio (egui)
   src/app.rs              estado, pestañas, barra de herramientas, refresco, vigilancia de archivos
   src/actions.rs          operaciones lanzadas desde la interfaz

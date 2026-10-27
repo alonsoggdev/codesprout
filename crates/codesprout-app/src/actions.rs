@@ -20,6 +20,14 @@ const READ_MAX: usize = 2 * 1024 * 1024;
 const IMAGE_MAX: usize = 20 * 1024 * 1024;
 
 pub fn open_terminal(repo: &Path) {
+    if let Some(loc) = codesprout_core::wsl::locate(repo) {
+        // a shell of the distro itself, already in the repository
+        let wsl_args = ["-d", &loc.distro, "--cd", &loc.path];
+        if Command::new("wt.exe").arg("wsl.exe").args(wsl_args).spawn().is_err() {
+            let _ = new_console(Command::new("wsl.exe").args(wsl_args)).spawn();
+        }
+        return;
+    }
     #[cfg(windows)]
     {
         let try_spawn = |cmd: &str, args: &[&str]| Command::new(cmd).args(args).current_dir(repo).spawn().is_ok();
@@ -51,6 +59,35 @@ pub fn open_terminal(repo: &Path) {
 
 pub fn pick_folder(title: &str) -> Option<PathBuf> {
     rfd::FileDialog::new().set_title(title).pick_folder()
+}
+
+pub fn pick_folder_in(title: &str, start: &Path) -> Option<PathBuf> {
+    rfd::FileDialog::new().set_title(title).set_directory(start).pick_folder()
+}
+
+/// Opens a console in `distro` that installs git with the distro's package manager; it asks for
+/// the user's sudo password there.
+pub fn install_git_in_wsl(distro: &str) {
+    const SCRIPT: &str = "echo 'CodeSprout: instalando Git…'; echo; \
+        if command -v apt-get >/dev/null; then sudo apt-get update && sudo apt-get install -y git; \
+        elif command -v dnf >/dev/null; then sudo dnf install -y git; \
+        elif command -v pacman >/dev/null; then sudo pacman -S --noconfirm git; \
+        elif command -v zypper >/dev/null; then sudo zypper install -y git; \
+        elif command -v apk >/dev/null; then sudo apk add git; \
+        else echo 'No se reconoce el gestor de paquetes: instala git a mano.'; fi; \
+        echo; echo 'Pulsa Intro para cerrar y vuelve a CodeSprout.'; read x";
+    let _ = new_console(Command::new("wsl.exe").args(["-d", distro, "--cd", "~", "--exec", "/bin/sh", "-c", SCRIPT])).spawn();
+}
+
+/// Runs a console program in a window of its own (not hidden, not sharing the app's console).
+fn new_console(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        cmd.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    cmd
 }
 
 impl App {
@@ -1021,12 +1058,42 @@ impl App {
         });
     }
 
-    pub fn do_fetch(&mut self, remote: Option<String>) {
+    /// Asks before fetching, with the option to delete local branches whose remote branch is gone.
+    pub fn open_fetch(&mut self, remote: Option<String>) {
+        let delete_gone = self.store.settings.fetch_delete_gone;
+        self.dialogs.push(Dialog::Fetch { remote, delete_gone });
+    }
+
+    pub fn do_fetch(&mut self, remote: Option<String>, delete_gone: bool) {
         let Some(t) = self.tab_mut() else { return };
         t.last_fetch = Instant::now();
         let p = t.path.clone();
         let title = remote.as_ref().map_or("Fetch".to_string(), |r| format!("Fetch {r}"));
-        self.remote_op(&title, move |h| git::fetch(&p, remote.as_deref(), true, Some(h)), |app, _| app.ok("Fetch completado"));
+        self.remote_op(
+            &title,
+            move |h| {
+                git::fetch(&p, remote.as_deref(), true, Some(h))?;
+                if delete_gone {
+                    git::delete_gone_branches(&p, remote.as_deref())
+                } else {
+                    Ok(Default::default())
+                }
+            },
+            |app, gone: git::GoneCleanup| {
+                let list = |v: &[String]| v.join(", ");
+                match (gone.deleted.len(), gone.kept.is_empty()) {
+                    (0, true) => app.ok("Fetch completado"),
+                    (n, true) => app.ok(format!("Fetch completado. {}: {}", crate::widgets::plural(n, "Rama eliminada", "Ramas eliminadas"), list(&gone.deleted))),
+                    (n, false) => {
+                        let deleted = if n > 0 { format!("{}: {}. ", crate::widgets::plural(n, "Rama eliminada", "Ramas eliminadas"), list(&gone.deleted)) } else { String::new() };
+                        app.toast(
+                            format!("Fetch completado. {deleted}Se conservan porque tienen commits sin fusionar: {}. Si ya no las necesitas, elimínalas a mano.", list(&gone.kept)),
+                            ToastKind::Warn,
+                        );
+                    }
+                }
+            },
+        );
     }
 
     pub fn push_tag(&mut self, remote: String, name: String) {

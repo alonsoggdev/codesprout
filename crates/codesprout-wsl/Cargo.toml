@@ -1,0 +1,25 @@
+[package]
+name = "codesprout-wsl"
+description = "Agente de CodeSprout dentro de WSL: ejecuta Git en Linux y vigila los archivos para la app de Windows"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# The library is the protocol, shared with codesprout-core on Windows; the binary is the agent,
+# built for x86_64-unknown-linux-musl (static, so it runs on any distro) and embedded in the app.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "codesprout-wsl-agent"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+notify = "8"
+trash = "5"

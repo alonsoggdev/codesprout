@@ -92,6 +92,33 @@ pub fn gcm_configured() -> bool {
     helpers().iter().any(|h| h.contains("manager"))
 }
 
+/// The Git Credential Manager executable of Git for Windows (or the standalone install), so git
+/// inside WSL can share the accounts the user already signed in to on Windows.
+pub fn windows_gcm_exe() -> Option<std::path::PathBuf> {
+    static EXE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    EXE.get_or_init(|| {
+        if !cfg!(windows) {
+            return None;
+        }
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(exec) = run(&home(), &["--exec-path"], &Opts::default()).ok().filter(|r| r.ok()) {
+            // C:/Program Files/Git/mingw64/libexec/git-core → also mingw64/bin
+            let exec = std::path::PathBuf::from(exec.text().trim());
+            dirs.extend(exec.parent().and_then(|p| p.parent()).map(|p| p.join("bin")));
+            dirs.push(exec);
+        }
+        for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(pf) = std::env::var_os(var) {
+                let pf = std::path::PathBuf::from(pf);
+                dirs.push(pf.join("Git").join("mingw64").join("bin"));
+                dirs.push(pf.join("Git Credential Manager"));
+            }
+        }
+        dirs.into_iter().map(|d| d.join("git-credential-manager.exe")).find(|p| p.is_file())
+    })
+    .clone()
+}
+
 /// Makes GCM the global credential helper.
 pub fn configure_gcm() -> Result<()> {
     git(&home(), &["config", "--global", "credential.helper", "manager"], &Opts::default())?;

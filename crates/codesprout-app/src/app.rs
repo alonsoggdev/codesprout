@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codesprout_core::explorer::{self, ColumnMode};
-use codesprout_core::{repo as git, OpHandle, RepoState};
+use codesprout_core::{repo as git, wsl, OpHandle, RepoState};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Stroke};
 
 use crate::bus::{Bus, BusSender};
@@ -16,6 +16,14 @@ use crate::repo_state::{RepoTab, View, WORKTREE};
 use crate::store::{RepoEntry, Store, ThemePref};
 use crate::theme;
 use crate::widgets;
+
+/// Watches the active repository: Windows' own notifications, or the WSL agent's for repositories
+/// inside WSL (Windows gets none there). Dropping it stops watching.
+#[allow(dead_code)]
+enum Watcher {
+    Native(notify::RecommendedWatcher),
+    Wsl(wsl::WatchHandle),
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -63,7 +71,9 @@ pub struct App {
     pub git_version: Option<String>,
     pub gcm_version: Option<String>,
     pub lfs_version: Option<String>,
-    watcher: Option<notify::RecommendedWatcher>,
+    /// Installed WSL distros, for "Abrir desde Ubuntu" and cloning into WSL.
+    pub wsl_distros: Vec<String>,
+    watcher: Option<Watcher>,
     watch_key: Option<String>,
     watch_flag: Arc<AtomicBool>,
     pending_refresh: Option<Instant>,
@@ -91,6 +101,7 @@ impl App {
             git_version: None,
             gcm_version: None,
             lfs_version: None,
+            wsl_distros: Vec::new(),
             watcher: None,
             watch_key: None,
             watch_flag: Arc::new(AtomicBool::new(false)),
@@ -108,14 +119,20 @@ impl App {
         let active = app.store.active.clone();
         app.active = active.and_then(|a| app.tabs.iter().position(|t| t.key == a));
         app.bus.spawn(
-            || (git::version(), codesprout_core::credentials::gcm_version(), codesprout_core::extras::lfs_version()),
-            |app, (v, gcm, lfs)| {
+            || (git::version(), codesprout_core::credentials::gcm_version(), codesprout_core::extras::lfs_version(), wsl::distros()),
+            |app, (v, gcm, lfs, distros)| {
                 app.gcm_version = gcm;
                 app.lfs_version = lfs;
                 match v {
                     Ok(v) => app.git_version = Some(v),
+                    // repositories inside WSL use the distro's git, so the app is still useful
+                    Err(_) if !distros.is_empty() => app.toast(
+                        format!("Git no está instalado en Windows: podrás abrir los repositorios que tengas dentro de {}.", distros.join(" o ")),
+                        ToastKind::Warn,
+                    ),
                     Err(e) => app.error_dialog("Git no está disponible", &e.to_string()),
                 }
+                app.wsl_distros = distros;
             },
         );
         if app.active.is_some() {
@@ -211,9 +228,27 @@ impl App {
             move || git::resolve_repo(&dir),
             |app, r| match r {
                 Ok(p) => app.open_resolved(p),
-                Err(e) => app.toast(e.to_string(), ToastKind::Error),
+                Err(e) => app.git_error(e),
             },
         );
+    }
+
+    /// Shows an error from git; when a WSL distro lacks git, offers to install it.
+    pub fn git_error(&mut self, e: anyhow::Error) {
+        match e.downcast_ref::<wsl::GitMissing>() {
+            Some(m) => {
+                let distro = m.distro.clone();
+                self.confirm(
+                    &format!("{distro} no tiene Git"),
+                    &e.to_string(),
+                    Some("Se abrirá una consola de la distribución que instala Git; te pedirá tu contraseña de sudo. Cuando termine, vuelve a abrir el repositorio.".into()),
+                    "Instalar Git",
+                    false,
+                    move |_| crate::actions::install_git_in_wsl(&distro),
+                );
+            }
+            None => self.toast(e.to_string(), ToastKind::Error),
+        }
     }
 
     pub fn open_resolved(&mut self, p: PathBuf) {
@@ -269,21 +304,35 @@ impl App {
         let sender = self.sender();
         let flag = self.watch_flag.clone();
         let k = key.clone();
-        let w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(ev) = res else { return };
-            let relevant = ev.paths.iter().any(|p| {
-                let s = p.to_string_lossy().replace('\\', "/");
-                !(s.contains("/.git/objects") || s.contains("/.git/logs") || s.ends_with(".lock") || s.contains("/.git/codesprout"))
-            });
-            if relevant && !flag.swap(true, Ordering::SeqCst) {
+        let changed = move || {
+            if !flag.swap(true, Ordering::SeqCst) {
                 let k = k.clone();
                 sender.send(move |app| app.on_fs_change(&k));
             }
+        };
+        if wsl::locate(Path::new(&key)).is_some() {
+            // may have to start the distro: off the UI thread
+            let path = PathBuf::from(&key);
+            self.bus.spawn(
+                move || wsl::watch(&path, changed),
+                move |app, r| {
+                    if let (Ok(Some(h)), true) = (r, app.watch_key.as_deref() == Some(key.as_str())) {
+                        app.watcher = Some(Watcher::Wsl(h));
+                    }
+                },
+            );
+            return;
+        }
+        let w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            let Ok(ev) = res else { return };
+            if ev.paths.iter().any(|p| codesprout_wsl::is_relevant_change(&p.to_string_lossy())) {
+                changed();
+            }
         });
         if let Ok(mut w) = w {
-            use notify::Watcher;
+            use notify::Watcher as _;
             if w.watch(Path::new(&key), notify::RecursiveMode::Recursive).is_ok() {
-                self.watcher = Some(w);
+                self.watcher = Some(Watcher::Native(w));
             }
         }
     }
@@ -765,7 +814,7 @@ impl App {
             Some("commit") => self.set_view(View::Changes),
             Some("pull") => self.open_pull(),
             Some("push") => self.open_push(None),
-            Some("fetch") => self.do_fetch(None),
+            Some("fetch") => self.open_fetch(None),
             Some("branch") => self.open_new_branch(None),
             Some("merge") => self.open_merge(),
             Some("stash") => self.dialogs.push(Dialog::stash()),

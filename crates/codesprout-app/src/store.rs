@@ -50,6 +50,8 @@ pub struct Settings {
     pub auto_fetch_min: u32,
     pub all_branches: bool,
     pub pull_rebase: bool,
+    /// Last choice in the fetch dialog: delete local branches whose remote branch is gone.
+    pub fetch_delete_gone: bool,
     pub clone_dir: String,
     /// Spacing between the lanes of the history graph.
     pub zoom: f32,
@@ -75,6 +77,7 @@ impl Default for Settings {
             auto_fetch_min: 0,
             all_branches: true,
             pull_rebase: false,
+            fetch_delete_gone: false,
             clone_dir: String::new(),
             zoom: 1.0,
             ignore_whitespace: false,

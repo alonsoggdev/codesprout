@@ -11,7 +11,7 @@ use std::thread;
 
 use anyhow::{anyhow, bail, Result};
 
-const BASE_ARGS: &[&str] = &[
+pub(crate) const BASE_ARGS: &[&str] = &[
     "--no-optional-locks",
     "-c",
     "core.quotepath=false",
@@ -26,6 +26,10 @@ const BASE_ARGS: &[&str] = &[
     "-c",
     "core.pager=cat",
 ];
+
+/// Never ask on a terminal or open an editor: the app answers prompts itself.
+pub(crate) const BASE_ENV: &[(&str, &str)] =
+    &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true"), ("GIT_MERGE_AUTOEDIT", "no")];
 
 pub const LITERAL: (&str, &str) = ("GIT_LITERAL_PATHSPECS", "1");
 
@@ -43,8 +47,15 @@ pub fn helper_exe() -> Option<&'static Path> {
 }
 
 /// Quotes a path for git's shell-interpreted settings (GIT_SEQUENCE_EDITOR, exec lines).
+/// Paths inside WSL become their Linux path, since that is where the shell runs.
 pub fn sh_quote(p: &Path) -> String {
-    let s = p.to_string_lossy().replace('\\', "/");
+    match crate::wsl::locate(p) {
+        Some(loc) => quote(&loc.path),
+        None => quote(&p.to_string_lossy().replace('\\', "/")),
+    }
+}
+
+pub(crate) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
@@ -52,7 +63,8 @@ pub fn sh_quote(p: &Path) -> String {
 #[derive(Clone, Default)]
 pub struct OpHandle {
     cancelled: Arc<AtomicBool>,
-    pid: Arc<Mutex<Option<u32>>>,
+    /// Stops the running process: kills it here, or asks the WSL agent to.
+    killer: Arc<Mutex<Option<Box<dyn Fn() + Send>>>>,
     progress: Option<Sender<String>>,
 }
 
@@ -63,13 +75,35 @@ impl OpHandle {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-        if let Some(pid) = *self.pid.lock().unwrap() {
-            kill_tree(pid);
+        if let Some(kill) = &*self.killer.lock().unwrap() {
+            kill();
         }
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_killer(&self, kill: Box<dyn Fn() + Send>) {
+        // cancelled before the process started
+        if self.is_cancelled() {
+            kill();
+        }
+        *self.killer.lock().unwrap() = Some(kill);
+    }
+
+    pub(crate) fn clear_killer(&self) {
+        *self.killer.lock().unwrap() = None;
+    }
+
+    pub(crate) fn has_progress(&self) -> bool {
+        self.progress.is_some()
+    }
+
+    pub(crate) fn progress_line(&self, line: String) {
+        if let Some(tx) = &self.progress {
+            let _ = tx.send(line);
+        }
     }
 }
 
@@ -140,21 +174,16 @@ impl Output {
 }
 
 /// Spawns `git` and collects its output. Never fails because of the exit code.
+/// Repositories inside WSL run with the distro's git (see [`crate::wsl`]).
 pub fn run(cwd: &Path, args: &[&str], opts: &Opts) -> Result<Output> {
+    if let Some(loc) = crate::wsl::locate(cwd) {
+        return crate::wsl::run(&loc, args, opts);
+    }
     if !cwd.exists() {
         bail!("La carpeta no existe: {}", cwd.display());
     }
     let mut cmd = Command::new("git");
-    cmd.args(BASE_ARGS)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_EDITOR", "true")
-        .env("GIT_SEQUENCE_EDITOR", "true")
-        .env("GIT_MERGE_AUTOEDIT", "no");
+    cmd.args(BASE_ARGS).args(args).current_dir(cwd).envs(BASE_ENV.iter().copied());
     if let Some(helper) = helper_exe() {
         let askpass = helper.to_string_lossy().into_owned();
         cmd.env("GIT_ASKPASS", &askpass)
@@ -165,8 +194,13 @@ pub fn run(cwd: &Path, args: &[&str], opts: &Opts) -> Result<Output> {
     for (k, v) in &opts.env {
         cmd.env(k, v);
     }
-    hide_window(&mut cmd);
+    collect(cmd, opts)
+}
 
+/// Runs a prepared git command (git itself, or `wsl.exe` running git) and collects its output.
+pub(crate) fn collect(mut cmd: Command, opts: &Opts) -> Result<Output> {
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    hide_window(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow!("No se encontró Git. Instálalo (https://git-scm.com) y asegúrate de que está en el PATH.")
@@ -175,10 +209,8 @@ pub fn run(cwd: &Path, args: &[&str], opts: &Opts) -> Result<Output> {
         }
     })?;
     if let Some(op) = opts.op {
-        *op.pid.lock().unwrap() = Some(child.id());
-        if op.is_cancelled() {
-            kill_tree(child.id());
-        }
+        let pid = child.id();
+        op.set_killer(Box::new(move || kill_tree(pid)));
     }
 
     let mut stdin = child.stdin.take().expect("stdin");
@@ -238,7 +270,7 @@ pub fn run(cwd: &Path, args: &[&str], opts: &Opts) -> Result<Output> {
     let stderr = err_reader.join().unwrap_or_default();
     let cancelled = opts.op.map(|o| o.is_cancelled()).unwrap_or(false);
     if let Some(op) = opts.op {
-        *op.pid.lock().unwrap() = None;
+        op.clear_killer();
     }
     Ok(Output { code: status.code(), stdout: out, stderr, truncated, cancelled })
 }

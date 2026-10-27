@@ -95,6 +95,7 @@ pub enum Dialog {
     Tag { hash: String, name: String, msg: String, push: bool, remote: String, remotes: Vec<String>, sign: bool, error: Option<String> },
     DeleteTag { name: String, remote: Option<String>, remote_too: bool },
     DiscardAll { tracked: usize, untracked: usize, with_untracked: bool },
+    Fetch { remote: Option<String>, delete_gone: bool },
     Pull { remotes: Vec<String>, remote: String, branches: Vec<(String, String)>, rows: Vec<PullRow>, rebase: bool, error: Option<String> },
     Push { remotes: Vec<String>, remote: String, rows: Vec<PushRow>, tags: bool, force: bool, error: Option<String> },
     AddRemote { name: String, url: String, error: Option<String> },
@@ -545,6 +546,25 @@ impl App {
                     return Out::Close;
                 }
             }
+            Dialog::Fetch { remote, delete_gone } => {
+                ui.heading("Fetch");
+                ui.label(match remote {
+                    Some(r) => format!("Descargar las novedades de {r} sin cambiar tus ramas."),
+                    None => "Descargar las novedades de todos los remotos sin cambiar tus ramas.".into(),
+                });
+                check(ui, delete_gone, "Eliminar las ramas locales que se han borrado del remoto");
+                ui.label(widgets::small("Solo se eliminan las que ya están fusionadas; las que tienen commits sin fusionar y la rama actual se conservan."));
+                let (cancel, ok) = buttons(ui, "Fetch", false, !busy);
+                if cancel {
+                    return Out::Close;
+                }
+                if ok {
+                    self.store.settings.fetch_delete_gone = *delete_gone;
+                    self.persist();
+                    self.do_fetch(remote.clone(), *delete_gone);
+                    return Out::Close;
+                }
+            }
             Dialog::Pull { remotes, remote, branches, rows, rebase, error } => {
                 ui.heading("Pull");
                 ui.label("Marca las ramas que quieres actualizar con los cambios del remoto.");
@@ -850,6 +870,26 @@ impl App {
                         }
                     }
                 });
+                if !self.wsl_distros.is_empty() {
+                    // cloned there, the repository uses the distro's git
+                    ui.horizontal(|ui| {
+                        ui.label(widgets::small("Clonar dentro de WSL:"));
+                        for distro in self.wsl_distros.clone() {
+                            if ui.small_button(&distro).on_hover_text(format!("Tu carpeta personal en {distro}")).clicked() {
+                                self.bus.spawn(move || codesprout_core::wsl::home(&distro), |app, r| {
+                                    for d in app.dialogs.iter_mut() {
+                                        if let Dialog::Clone { parent, error, .. } = d {
+                                            match &r {
+                                                Ok(home) => *parent = home.to_string_lossy().into_owned(),
+                                                Err(e) => *error = Some(e.to_string()),
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    });
+                }
                 field_label(ui, "Nombre de la carpeta");
                 if text_field(ui, name, "proyecto").changed() {
                     *touched = true;

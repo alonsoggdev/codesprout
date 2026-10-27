@@ -37,6 +37,8 @@ fn main() {
     if let Ok(exe) = std::env::current_exe() {
         codesprout_core::runner::set_helper_exe(exe);
     }
+    #[cfg(wsl_agent)]
+    codesprout_core::wsl::set_agent(include_bytes!(concat!(env!("OUT_DIR"), "/wsl-agent")));
 
     let store = store::Store::load();
     let mut viewport = egui::ViewportBuilder::default().with_title("CodeSprout").with_min_inner_size([960.0, 600.0]).with_drag_and_drop(true);

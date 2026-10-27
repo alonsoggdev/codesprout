@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use codesprout_core::diff::{build_patch, can_partial, parse_diff};
 use codesprout_core::explorer::{layout, ColumnMode, LaneKind};
@@ -13,10 +12,30 @@ use codesprout_core::rebase::{self, TodoAction, TodoEntry};
 use codesprout_core::repo::{self as g, CommitFlags, PushArgs};
 use codesprout_core::{extras, flow, DiffOptions, FileChange, RepoState, ResetMode};
 
+/// Temporary folder for a test. `CODESPROUT_TEST_ROOT` moves them elsewhere, e.g. into WSL
+/// (`\\wsl.localhost\Ubuntu\tmp\cs-tests`, with `CODESPROUT_WSL_AGENT` pointing to the agent
+/// built for x86_64-unknown-linux-musl) to run the whole suite with the distro's git.
+fn tmpdir() -> tempfile::TempDir {
+    static AGENT: std::sync::Once = std::sync::Once::new();
+    AGENT.call_once(|| {
+        if let Some(p) = std::env::var_os("CODESPROUT_WSL_AGENT") {
+            codesprout_core::wsl::set_agent(Box::leak(fs::read(p).expect("agente de WSL").into_boxed_slice()));
+        }
+    });
+    match std::env::var_os("CODESPROUT_TEST_ROOT") {
+        Some(root) => tempfile::Builder::new().prefix("cs-").tempdir_in(root).unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    }
+}
+
+/// Runs git through the app's runner, so repositories in WSL use the distro's git too.
 fn sh(cwd: &Path, args: &[&str]) -> String {
-    let o = Command::new("git").args(args).current_dir(cwd).output().expect("git");
-    assert!(o.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&o.stderr));
-    String::from_utf8_lossy(&o.stdout).into_owned()
+    let args: Vec<String> =
+        args.iter().map(|a| if Path::new(a).is_absolute() { codesprout_core::wsl::arg_path(cwd, Path::new(a)) } else { a.to_string() }).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = codesprout_core::runner::run(cwd, &args, &Default::default()).expect("git");
+    assert!(o.ok(), "git {:?}: {}", args, o.stderr);
+    o.text()
 }
 
 fn write(repo: &Path, rel: &str, text: impl AsRef<[u8]>) {
@@ -59,7 +78,7 @@ fn s(v: &[&str]) -> Vec<String> {
 
 #[test]
 fn unborn_repo_status_log_refs_unstage() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "unborn");
     assert!(g::log(&repo, 100, true).unwrap().is_empty());
     write(&repo, "a b.txt", "hola\n");
@@ -78,7 +97,7 @@ fn unborn_repo_status_log_refs_unstage() {
 
 #[test]
 fn commit_log_details_branches_tags_special_names() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "basic");
     write(&repo, "readme.md", "uno\ndos\ntres\n");
     write(&repo, "[weird] name.txt", "w\n");
@@ -129,7 +148,7 @@ fn commit_log_details_branches_tags_special_names() {
 #[test]
 fn partial_staging_hunks_and_lines_lf_and_crlf() {
     for eol in ["\n", "\r\n"] {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tmpdir();
         let repo = new_repo(tmp.path(), "partial");
         let lines: Vec<String> = (1..=30).map(|i| format!("line {i}")).collect();
         write(&repo, "f.txt", lines.join(eol) + eol);
@@ -192,7 +211,7 @@ fn partial_staging_hunks_and_lines_lf_and_crlf() {
 
 #[test]
 fn renames_show_in_status_and_diff() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "rename");
     write(&repo, "old.txt", "contenido estable\n".repeat(20));
     commit_all(&repo, "base");
@@ -208,7 +227,7 @@ fn renames_show_in_status_and_diff() {
 
 #[test]
 fn merge_conflicts_are_reported_resolved_and_continued() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "conflict");
     write(&repo, "c.txt", "base\n");
     commit_all(&repo, "base");
@@ -254,7 +273,7 @@ fn merge_conflicts_are_reported_resolved_and_continued() {
 
 #[test]
 fn stash_cherry_pick_revert_reset() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "stash");
     write(&repo, "s.txt", "1\n");
     let base = commit_all(&repo, "base");
@@ -295,7 +314,7 @@ fn stash_cherry_pick_revert_reset() {
 
 #[test]
 fn clone_remotes_fetch_push_pull_upstream() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let root = tmp.path();
     let bare = root.join("origin.git");
     sh(root, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
@@ -354,6 +373,15 @@ fn clone_remotes_fetch_push_pull_upstream() {
     let err = g::fast_forward(&a, "origin", "feat", "feat", None).unwrap_err();
     assert!(err.to_string().contains("cámbiate a ella"), "{err}");
     g::delete_remote_branch(&a, "origin", "feat", None).unwrap();
+    // local branches whose remote branch is gone (new): merged ones go, unmerged ones stay
+    g::create_branch(&a, "done", None, false).unwrap();
+    push(&a, "done", true).unwrap();
+    g::delete_remote_branch(&b, "origin", "done", None).unwrap();
+    g::fetch(&a, Some("origin"), true, None).unwrap();
+    let gone = g::delete_gone_branches(&a, Some("origin")).unwrap();
+    assert_eq!(gone.deleted, ["done"]);
+    assert_eq!(gone.kept, ["feat"]);
+    assert!(g::delete_gone_branches(&a, Some("otro")).unwrap().kept.is_empty());
     g::create_tag(&a, "v2", None, "", false).unwrap();
     g::push_tag(&a, "origin", "v2", None).unwrap();
     assert!(sh(&bare, &["tag"]).contains("v2"));
@@ -374,7 +402,7 @@ fn clone_remotes_fetch_push_pull_upstream() {
 
 #[test]
 fn identity_gitignore_read_working_file_resolve_repo() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "misc");
     g::set_identity(&repo, "Local Name", "local@example.com", false).unwrap();
     assert_eq!(g::identity(&repo).name, "Local Name");
@@ -427,7 +455,7 @@ fn status_parser_handles_every_record_type() {
 
 #[test]
 fn file_history_follows_renames_and_blame() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "history");
     write(&repo, "a.txt", "uno\ndos\n");
     let c1 = commit_all(&repo, "crea a");
@@ -455,7 +483,7 @@ fn file_history_follows_renames_and_blame() {
 
 #[test]
 fn search_by_message_author_content_and_path() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "search");
     write(&repo, "x.txt", "alpha\n");
     commit_all(&repo, "Añade alpha");
@@ -474,7 +502,7 @@ fn search_by_message_author_content_and_path() {
 
 #[test]
 fn reflog_recovers_reset_commits() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "reflog");
     write(&repo, "r.txt", "1\n");
     let base = commit_all(&repo, "base");
@@ -491,7 +519,7 @@ fn reflog_recovers_reset_commits() {
 
 #[test]
 fn interactive_rebase_reorder_squash_reword_drop() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "rebase-i");
     write(&repo, "base.txt", "b\n");
     let base = commit_all(&repo, "base");
@@ -528,7 +556,7 @@ fn interactive_rebase_reorder_squash_reword_drop() {
 
 #[test]
 fn interactive_rebase_edit_stops() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "rebase-edit");
     write(&repo, "a", "a");
     let base = commit_all(&repo, "base");
@@ -544,7 +572,7 @@ fn interactive_rebase_edit_stops() {
 
 #[test]
 fn git_flow_feature_and_release() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "flow");
     write(&repo, "app.txt", "v0\n");
     commit_all(&repo, "inicio");
@@ -580,7 +608,7 @@ fn git_flow_feature_and_release() {
 
 #[test]
 fn submodules_worktrees_patches_archive() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let root = tmp.path();
     let lib = new_repo(root, "lib");
     write(&lib, "lib.txt", "lib\n");
@@ -634,7 +662,7 @@ fn submodules_worktrees_patches_archive() {
 
 #[test]
 fn commit_template_and_custom_actions() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "template");
     write(&repo, ".gitmessage", "# comentario\nTipo: \n\nDescripción\n");
     sh(&repo, &["config", "commit.template", ".gitmessage"]);
@@ -649,7 +677,7 @@ fn commit_template_and_custom_actions() {
 
 #[test]
 fn explorer_layout_on_real_history() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "explorer");
     write(&repo, "a", "1");
     commit_all(&repo, "a");
@@ -700,7 +728,7 @@ fn branch_names_are_cleaned_while_typing_and_accepted_by_git() {
     assert_eq!(g::branch_name_input(r"¿qué? ¡ya! @{x} ~^:*[\]"), "que_ya_x_");
     assert_eq!(g::branch_name_input("a//b..c"), "a/b.c");
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmpdir();
     let repo = new_repo(tmp.path(), "names");
     for (typed, expected) in [
         ("Corrección de errores ", "Correccion_de_errores"),

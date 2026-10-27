@@ -688,11 +688,12 @@ dependencies = [
 
 [[package]]
 name = "codesprout-app"
-version = "2.0.7"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "codesprout-core",
+ "codesprout-wsl",
  "dirs",
  "eframe",
  "image",
@@ -706,9 +707,10 @@ dependencies = [
 
 [[package]]
 name = "codesprout-core"
-version = "2.0.7"
+version = "2.1.0"
 dependencies = [
  "anyhow",
+ "codesprout-wsl",
  "serde",
  "serde_json",
  "sha2",
@@ -716,6 +718,17 @@ dependencies = [
  "tempfile",
  "trash",
  "ureq",
+]
+
+[[package]]
+name = "codesprout-wsl"
+version = "2.1.0"
+dependencies = [
+ "libc",
+ "notify",
+ "serde",
+ "serde_json",
+ "trash",
 ]
 
 [[package]]
