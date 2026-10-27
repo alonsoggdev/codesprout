@@ -909,7 +909,7 @@ impl App {
             }
             if sticky {
                 ui.add_space(12.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                widgets::right_row(ui, |ui| {
                     if widgets::primary_button(ui, "Cerrar", true).clicked() {
                         close = true;
                     }
@@ -998,7 +998,7 @@ impl App {
                 });
             });
             ui.add_space(8.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &p.done {
+            widgets::right_row(ui, |ui| match &p.done {
                 None => {
                     if ui.button("Cancelar").clicked() {
                         p.handle.cancel();

@@ -179,7 +179,7 @@ fn err(ui: &mut egui::Ui, e: &Option<String>) {
 fn buttons(ui: &mut egui::Ui, primary: &str, danger: bool, enabled: bool) -> (bool, bool) {
     ui.add_space(10.0);
     let mut res = (false, false);
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    widgets::right_row(ui, |ui| {
         let ok = if danger { widgets::danger_button(ui, primary, enabled) } else { widgets::primary_button(ui, primary, enabled) };
         res.1 = ok.clicked();
         res.0 = ui.button("Cancelar").clicked();
@@ -215,12 +215,20 @@ impl App {
             Dialog::CreatePr { .. } | Dialog::Output { .. } | Dialog::Accounts { .. } | Dialog::Update { .. } => 560.0,
             _ => 460.0,
         };
-        let c = theme::p();
-        egui::Modal::new(egui::Id::new(("dialog", below))).frame(egui::Frame::popup(&ctx.style()).inner_margin(20)).show(ctx, |ui| {
+        // Each kind of dialog gets its own id: egui remembers a modal's size, and a small dialog
+        // must not open with the size of a big one shown before it.
+        let id = egui::Id::new(("dialog", below, std::mem::discriminant(&d)));
+        // A dialog taller than the window scrolls instead of going off screen
+        let max_height = (ctx.screen_rect().height() - 120.0).max(200.0);
+        egui::Modal::new(id).frame(egui::Frame::popup(&ctx.style()).inner_margin(20)).show(ctx, |ui| {
             ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 8.0;
-            out = self.dialog_body(ui, &mut d);
-            let _ = c;
+            // the modal's max rect is last frame's size; widen it so the scroll area can grow
+            ui.set_max_height(max_height);
+            egui::ScrollArea::vertical().id_salt("dialog-scroll").max_height(max_height).show(ui, |ui| {
+                ui.set_width(width);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                out = self.dialog_body(ui, &mut d);
+            });
         });
         if esc && !matches!(d, Dialog::Accounts { pending: Some(_), .. }) && !(matches!(d, Dialog::Update { .. }) && self.update.installing.is_some()) {
             out = Out::Close;
@@ -239,7 +247,7 @@ impl App {
                 widgets::error_box(ui, msg);
                 ui.add_space(8.0);
                 let mut close = false;
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                widgets::right_row(ui, |ui| {
                     if ui.button("Copiar").clicked() {
                         ui.ctx().copy_text(msg.clone());
                     }
@@ -1003,7 +1011,7 @@ impl App {
                         check(ui, keep, "Conservar la rama después de finalizar");
                         err(ui, error);
                         ui.add_space(6.0);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        widgets::right_row(ui, |ui| {
                             if widgets::primary_button(ui, "Finalizar", !busy).clicked() {
                                 finish = Some(n.clone());
                             }
@@ -1030,7 +1038,7 @@ impl App {
                     }
                 }
                 ui.add_space(6.0);
-                let close = ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.button("Cerrar").clicked()).inner;
+                let close = widgets::right_row(ui, |ui| ui.button("Cerrar").clicked()).inner;
                 if start {
                     let (Some(p), k, n) = (path.clone(), *kind, git::branch_name(name)) else { return Out::Close };
                     self.op("git-flow: empezar", move || flow::start(&p, k, &n), |app, b| app.ok(format!("Rama {b} creada")));
@@ -1090,7 +1098,7 @@ impl App {
                 err(ui, error);
                 ui.add_space(8.0);
                 let mut act = 0;
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                widgets::right_row(ui, |ui| {
                     if r.provider != Provider::AzureDevOps && widgets::primary_button(ui, "Crear", !busy).clicked() {
                         act = 1;
                     }
@@ -1277,7 +1285,7 @@ impl App {
         err(ui, error);
         ui.add_space(8.0);
         let mut close = false;
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        widgets::right_row(ui, |ui| {
             match pending {
                 Some(h) => {
                     ui.spinner();

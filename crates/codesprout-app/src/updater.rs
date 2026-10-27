@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, pos2, vec2, Align, Color32, CursorIcon, FontId, Layout, Rect, RichText, Sense};
+use eframe::egui::{self, pos2, vec2, Color32, CursorIcon, FontId, Rect, RichText, Sense};
 use codesprout_core::update::{self, Release};
 
 use crate::app::{App, ToastKind};
@@ -174,7 +174,7 @@ impl App {
         }
         ui.add_space(10.0);
         let mut close = false;
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        widgets::right_row(ui, |ui| {
             if rel.asset.is_some() {
                 let label = if error.is_some() { "Reintentar" } else { "Actualizar y reiniciar" };
                 if widgets::primary_button(ui, label, installing.is_none()).clicked() {

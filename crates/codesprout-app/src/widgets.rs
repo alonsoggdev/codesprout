@@ -187,6 +187,13 @@ pub fn section_title(ui: &mut Ui, title: &str, count: Option<usize>, collapsed: 
     (resp, rect)
 }
 
+/// Right-aligned row one widget tall, for the buttons at the bottom of modals. Not
+/// `with_layout(right_to_left)`: that takes all the remaining height, and since a modal
+/// remembers its size, the dialog never shrinks back and can end up taller than the window.
+pub fn right_row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), ui.spacing().interact_size.y), Layout::right_to_left(Align::Center), add)
+}
+
 pub fn field_label(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).size(12.0).color(theme::p().text2));
 }
