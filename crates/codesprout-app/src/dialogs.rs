@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use codesprout_core::credentials::{self, Provider};
-use codesprout_core::flow::{self, FinishOptions, FlowConfig, FlowKind};
+use codesprout_core::flow::{self, FinishOptions, FlowConfig, FlowKind, PendingChanges};
 use codesprout_core::hosting::{self, HostedRepo, RemoteRef};
 use codesprout_core::rebase::{self, TodoAction, TodoEntry};
 use codesprout_core::repo::{self as git, PushArgs};
@@ -103,8 +103,9 @@ pub enum Dialog {
     Clone { url: String, parent: String, name: String, touched: bool, provider: Option<Provider>, repos: Option<Vec<HostedRepo>>, loading: bool, filter: String, use_ssh: bool, error: Option<String> },
     InteractiveRebase { base: Option<String>, base_label: String, rows: Option<Vec<RebaseRow>>, has_merges: bool, error: Option<String> },
     FlowInit { cfg: FlowConfig, branches: Vec<String>, error: Option<String> },
-    /// `current` is the feature/release/hotfix checked out (without prefix): then only finishing it is offered
-    Flow { cfg: FlowConfig, kind: FlowKind, current: Option<String>, name: String, keep: bool, tag_msg: String, error: Option<String> },
+    /// `current` is the feature/release/hotfix checked out (without prefix): then only finishing it is offered.
+    /// `changes` counts the uncommitted files; if any, `pending` says where they go when starting.
+    Flow { cfg: FlowConfig, kind: FlowKind, current: Option<String>, name: String, keep: bool, tag_msg: String, changes: usize, pending: PendingChanges, error: Option<String> },
     CreatePr { remote: Option<RemoteRef>, title: String, body: String, source: String, target: String, locals: Vec<String>, targets: Vec<String>, draft: bool, error: Option<String> },
     LfsTrack { pattern: String, error: Option<String> },
     SubmoduleAdd { url: String, path: String, error: Option<String> },
@@ -1032,7 +1033,7 @@ impl App {
                     return Out::Close;
                 }
             }
-            Dialog::Flow { cfg, kind, current, name, keep, tag_msg, error } => {
+            Dialog::Flow { cfg, kind, current, name, keep, tag_msg, changes, pending, error } => {
                 ui.heading("git-flow");
                 let mut start = false;
                 let mut finish = None;
@@ -1074,6 +1075,13 @@ impl App {
                             }
                             start = widgets::primary_button(ui, "Empezar", !busy && !git::branch_name(name).is_empty()).clicked();
                         });
+                        if *changes > 0 {
+                            ui.add_space(4.0);
+                            let n = if *changes == 1 { "1 archivo con cambios sin confirmar".to_string() } else { format!("{changes} archivos con cambios sin confirmar") };
+                            ui.label(RichText::new(format!("Tienes {n}. ¿Qué hago con ellos?")).strong());
+                            ui.radio_value(pending, PendingChanges::Carry, "Llevarlos a la nueva rama");
+                            ui.radio_value(pending, PendingChanges::Stash, "Guardarlos en un stash y empezar limpia");
+                        }
                         err(ui, error);
                     }
                 }
@@ -1081,7 +1089,20 @@ impl App {
                 let close = widgets::right_row(ui, |ui| ui.button("Cerrar").clicked()).inner;
                 if start {
                     let (Some(p), k, n) = (path.clone(), *kind, git::branch_name(name)) else { return Out::Close };
-                    self.op("git-flow: empezar", move || flow::start(&p, k, &n), |app, b| app.ok(format!("Rama {b} creada")));
+                    let pc = if *changes > 0 { Some(*pending) } else { None };
+                    self.op("git-flow: empezar", move || flow::start(&p, k, &n, pc.unwrap_or_default()), move |app, r| {
+                        if r.conflicts {
+                            app.toast(r.output.clone(), ToastKind::Warn);
+                            app.set_view(crate::repo_state::View::Changes);
+                        } else {
+                            let b = &r.output;
+                            app.ok(match pc {
+                                Some(PendingChanges::Carry) => format!("Rama {b} creada con tus cambios"),
+                                Some(PendingChanges::Stash) => format!("Rama {b} creada; tus cambios quedan en un stash"),
+                                None => format!("Rama {b} creada"),
+                            });
+                        }
+                    });
                     return Out::Close;
                 }
                 if let Some(n) = finish {
@@ -1685,7 +1706,8 @@ impl App {
             Some(cfg) => {
                 let on = r.current_branch.as_deref().and_then(|b| FlowKind::ALL.into_iter().find_map(|k| b.strip_prefix(cfg.prefix(k)).filter(|n| !n.is_empty()).map(|n| (k, n.to_string()))));
                 let (kind, current) = on.map_or((FlowKind::Feature, None), |(k, n)| (k, Some(n)));
-                self.dialogs.push(Dialog::Flow { cfg, kind, current, name: String::new(), keep: false, tag_msg: String::new(), error: None })
+                let changes = t.status.as_ref().map_or(0, |s| s.change_count());
+                self.dialogs.push(Dialog::Flow { cfg, kind, current, name: String::new(), keep: false, tag_msg: String::new(), changes, pending: PendingChanges::Carry, error: None })
             }
             None => {
                 let branches: Vec<String> = r.local.iter().map(|b| b.name.clone()).collect();

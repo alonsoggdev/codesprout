@@ -581,8 +581,8 @@ fn git_flow_feature_and_release() {
     flow::init(&repo, &cfg).unwrap();
     assert_eq!(flow::config(&repo).unwrap(), cfg);
 
-    let b = flow::start(&repo, flow::FlowKind::Feature, "login").unwrap();
-    assert_eq!(b, "feature/login");
+    let b = flow::start(&repo, flow::FlowKind::Feature, "login", Default::default()).unwrap();
+    assert_eq!(b.output, "feature/login");
     write(&repo, "login.txt", "ok\n");
     commit_all(&repo, "login");
     let refs = g::refs(&repo).unwrap();
@@ -594,7 +594,7 @@ fn git_flow_feature_and_release() {
     assert!(!refs.local.iter().any(|b| b.name == "feature/login"));
     assert!(repo.join("login.txt").exists());
 
-    flow::start(&repo, flow::FlowKind::Release, "1.0").unwrap();
+    flow::start(&repo, flow::FlowKind::Release, "1.0", Default::default()).unwrap();
     write(&repo, "app.txt", "v1\n");
     commit_all(&repo, "versión 1.0");
     flow::finish(&repo, flow::FlowKind::Release, "1.0", &Default::default()).unwrap();
@@ -604,6 +604,48 @@ fn git_flow_feature_and_release() {
     let develop = refs.local.iter().find(|b| b.name == "develop").unwrap();
     assert_eq!(sh(&repo, &["show", &format!("{}:app.txt", main.hash)]), "v1\n");
     assert_eq!(sh(&repo, &["show", &format!("{}:app.txt", develop.hash)]), "v1\n");
+}
+
+#[test]
+fn git_flow_start_with_pending_changes() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "flow-pending");
+    write(&repo, "app.txt", "v0\n");
+    commit_all(&repo, "inicio");
+    flow::init(&repo, &Default::default()).unwrap();
+    // develop moves ahead of main, so the hotfix base differs from where the work was done
+    g::checkout(&repo, "develop").unwrap();
+    write(&repo, "dev.txt", "dev\n");
+    commit_all(&repo, "en develop");
+
+    // changes made on develop by mistake go to a hotfix (based on main), untracked ones included
+    write(&repo, "app.txt", "arreglo\n");
+    write(&repo, "nuevo.txt", "nuevo\n");
+    let r = flow::start(&repo, flow::FlowKind::Hotfix, "1.0.1", flow::PendingChanges::Carry).unwrap();
+    assert!(!r.conflicts);
+    assert_eq!(g::refs(&repo).unwrap().current_branch.as_deref(), Some("hotfix/1.0.1"));
+    assert_eq!(read(&repo, "app.txt"), "arreglo\n");
+    assert_eq!(read(&repo, "nuevo.txt"), "nuevo\n");
+    assert!(!repo.join("dev.txt").exists());
+    assert!(g::refs(&repo).unwrap().stashes.is_empty());
+
+    // or are left in a stash
+    let r = flow::start(&repo, flow::FlowKind::Feature, "otra", flow::PendingChanges::Stash).unwrap();
+    assert_eq!(r.output, "feature/otra");
+    assert_eq!(read(&repo, "app.txt"), "v0\n");
+    assert!(!repo.join("nuevo.txt").exists());
+    let refs = g::refs(&repo).unwrap();
+    assert_eq!(refs.stashes.len(), 1);
+    assert!(g::status(&repo).unwrap().change_count() == 0);
+
+    // without changes nothing is stashed or popped
+    flow::start(&repo, flow::FlowKind::Feature, "limpia", flow::PendingChanges::Carry).unwrap();
+    assert_eq!(g::refs(&repo).unwrap().stashes.len(), 1);
+
+    // an existing branch is refused without touching the changes
+    write(&repo, "app.txt", "otra vez\n");
+    assert!(flow::start(&repo, flow::FlowKind::Feature, "otra", flow::PendingChanges::Carry).is_err());
+    assert_eq!(read(&repo, "app.txt"), "otra vez\n");
 }
 
 #[test]
