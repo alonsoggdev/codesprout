@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "codesprout-app"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "codesprout-core"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "codesprout-wsl",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "codesprout-wsl"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "libc",
  "notify",
