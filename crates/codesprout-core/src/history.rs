@@ -7,7 +7,7 @@ use anyhow::Result;
 
 use crate::model::Commit;
 use crate::repo::{parse_log, LOG_FORMAT};
-use crate::runner::{git, out, out_opts, Opts};
+use crate::runner::{git, out, out_opts, run, Opts};
 
 /// One commit in the history of a file, with the path the file had in that commit.
 #[derive(Clone, Debug, Default)]
@@ -216,4 +216,84 @@ pub fn reflog(repo: &Path, reference: &str, max: usize) -> Result<Vec<ReflogEntr
             })
         })
         .collect())
+}
+
+// ---------------------------------------------------------------- undo
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UndoKind {
+    /// Go back to the branch (or commit) that was checked out before.
+    Checkout { previous: String },
+    /// Move `branch` back to where it was before its last change. `soft` (undoing a commit or an
+    /// amend) leaves the undone changes staged instead of taking them out of the files.
+    Move { branch: String, target: String, soft: bool },
+}
+
+/// The last operation that can be undone, read from the reflog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Undo {
+    /// The reflog line that describes it, as git wrote it ("commit: …", "merge …", "rebase (finish): …").
+    pub action: String,
+    pub kind: UndoKind,
+    /// The commit being undone is already in the upstream branch: undoing it locally needs a
+    /// force push afterwards.
+    pub published: bool,
+}
+
+/// Reflog actions written by [`undo`], so the next undo (a redo) knows how it was done.
+const SOFT_UNDO: &str = "undo (soft)";
+const HARD_UNDO: &str = "undo";
+
+fn reflog_lines(repo: &Path, reference: &str, n: usize) -> Vec<(String, String)> {
+    let count = format!("-{n}");
+    out(repo, &["log", "-g", &count, "--format=%H%x1f%gs", reference, "--"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\x1f').map(|(h, s)| (h.to_string(), s.to_string())))
+        .collect()
+}
+
+pub fn last_undo(repo: &Path) -> Option<Undo> {
+    if !crate::repo::has_head(repo) || crate::repo::operation_in_progress(repo).is_some() {
+        return None;
+    }
+    let head = reflog_lines(repo, "HEAD", 1);
+    let (_, action) = head.first()?;
+    if let Some(rest) = action.strip_prefix("checkout: moving from ") {
+        let previous = rest.split(" to ").next()?.to_string();
+        return Some(Undo { action: action.clone(), kind: UndoKind::Checkout { previous }, published: false });
+    }
+    let r = run(repo, &["symbolic-ref", "-q", "--short", "HEAD"], &Opts::default()).ok()?;
+    if !r.ok() {
+        return None;
+    }
+    let branch = r.text().trim().to_string();
+    let lines = reflog_lines(repo, &format!("refs/heads/{branch}"), 2);
+    let [(tip, action), (target, _)] = lines.as_slice() else { return None };
+    if action.starts_with("branch: Created") || tip == target {
+        return None;
+    }
+    let published = run(repo, &["merge-base", "--is-ancestor", tip, "@{upstream}"], &Opts::default()).map(|o| o.ok()).unwrap_or(false)
+        && !run(repo, &["merge-base", "--is-ancestor", tip, target], &Opts::default()).map(|o| o.ok()).unwrap_or(false);
+    // a plain commit (not a merge) and a soft undo, so redoing one gives back a clean tree
+    let soft = (action.starts_with("commit:") || action.starts_with("commit (amend)")) || action.starts_with(SOFT_UNDO);
+    Some(Undo { action: action.clone(), kind: UndoKind::Move { branch, target: target.clone(), soft }, published })
+}
+
+/// Undoes `u` if it is still the last operation. A commit is undone with `reset --soft` (its
+/// changes go back to the staging area); anything else moves the branch with `reset --keep`,
+/// which keeps uncommitted changes (and refuses if they would be lost). The undone commits stay
+/// in the reflog, so undoing again redoes them.
+pub fn undo(repo: &Path, u: &Undo) -> Result<()> {
+    if last_undo(repo).as_ref() != Some(u) {
+        anyhow::bail!("El repositorio ha cambiado: vuelve a intentarlo.");
+    }
+    match &u.kind {
+        UndoKind::Checkout { previous } => crate::repo::checkout(repo, previous),
+        UndoKind::Move { target, soft, .. } => {
+            let (mode, action) = if *soft { ("--soft", SOFT_UNDO) } else { ("--keep", HARD_UNDO) };
+            crate::runner::git(repo, &["reset", mode, target], &Opts::default().with_env("GIT_REFLOG_ACTION", action))?;
+            Ok(())
+        }
+    }
 }

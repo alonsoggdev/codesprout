@@ -76,7 +76,9 @@ La app busca versiones nuevas en las [releases de GitHub](https://github.com/alo
 | Ramas y operaciones | Ramas agrupadas en carpetas por prefijo (`feature/`, `hotfix/`…); crear, renombrar, eliminar (local y remota), merge, rebase, cherry-pick, revert, reset soft/mixed/hard, pull (merge o rebase), push (upstream, etiquetas, force-with-lease), fetch manual o automático |
 | Conflictos | Barra de estado con Abortar / Continuar / Saltar, marcadores resaltados, «usar la mía / la suya», herramienta de fusión externa |
 | Reflog | Todos los movimientos de HEAD, para recuperar commits perdidos tras un reset o un rebase |
-| git-flow | Features, releases y hotfixes sin instalar nada, compatible con la configuración de git-flow (AVH) |
+| Protección del trabajo | «Deshacer» la última operación (commit, merge, rebase, reset, checkout…) y rehacerla; copia en la lista de stashes antes de descartar o de un reset hard; al cambiar de rama con cambios pendientes, elegir entre llevarlos o guardarlos en un stash; `--autostash` en pull, merge y rebase; push forzado con `--force-if-includes`; bloqueo de operaciones mientras hay un merge o rebase a medias; aviso de `index.lock` huérfano, de submódulos desactualizados y de LFS sin instalar |
+| Mantenimiento | Comprobar la integridad del repositorio (`git fsck`), optimizarlo (`git maintenance`), activar `rerere`, confiar en carpetas de otro usuario (`safe.directory`). Necesita Git 2.30 o posterior |
+| git-flow | Features, releases y hotfixes sin instalar nada, compatible con la configuración de git-flow (AVH). Al empezar, tus cambios pendientes van a la rama nueva o a un stash; no se empieza ni finaliza sobre una rama por detrás de su remoto |
 | Cuentas y SSO | Inicio de sesión en GitHub, GitLab, Bitbucket y Azure DevOps a través de Git Credential Manager (navegador y SSO). Si Git o SSH piden una contraseña o la frase de una clave, la app muestra su propio diálogo |
 | Pull requests | Lista de PRs abiertas, crear una PR (o abrir la página de creación), clonar desde la lista de tus repositorios |
 | Remotos | Añadir, renombrar, cambiar URL, eliminar |

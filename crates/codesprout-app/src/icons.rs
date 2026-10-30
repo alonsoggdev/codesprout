@@ -46,6 +46,7 @@ pub enum Icon {
     Home,
     Eye,
     Patch,
+    Undo,
 }
 
 fn line(p: &Painter, a: Pos2, b: Pos2, s: Stroke) {
@@ -102,6 +103,11 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(p, at(1.0, 6.0), at(15.0, 6.0), st);
             line(p, at(8.0, 1.5), at(8.0, 10.0), st);
             poly(p, vec![at(5.0, 7.0), at(8.0, 10.0), at(11.0, 7.0)], st);
+        }
+        Icon::Undo => {
+            poly(p, vec![at(6.0, 2.5), at(2.5, 6.0), at(6.0, 9.5)], st);
+            bezier(p, at(2.5, 6.0), at(10.5, 6.0), at(13.5, 7.0), at(13.5, 10.5), st);
+            line(p, at(13.5, 10.5), at(13.5, 13.0), st);
         }
         Icon::Discard => {
             bezier(p, at(3.0, 9.0), at(3.0, 14.0), at(13.0, 14.0), at(13.0, 9.0), st);

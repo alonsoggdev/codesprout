@@ -88,8 +88,13 @@ pub fn resolve_repo(dir: &Path) -> Result<PathBuf> {
     let dir = if dir.is_dir() { dir.to_path_buf() } else { dir.parent().unwrap_or(dir).to_path_buf() };
     let r = run(&dir, &["rev-parse", "--show-toplevel"], &Opts::default())?;
     if !r.ok() {
+        // the full message: the app recognises it and offers to trust the folder
+        if r.stderr.contains("dubious ownership") {
+            bail!("{}", r.stderr.trim());
+        }
         bail!("La carpeta seleccionada no es un repositorio Git (o es un repositorio \"bare\").");
     }
+    require_git_version(&dir)?;
     Ok(wsl::native_path(&dir, r.text().trim()))
 }
 
@@ -146,6 +151,16 @@ pub fn parse_status(raw: &str) -> Status {
                 let mut chars = xy.chars();
                 let x = chars.next().unwrap_or('.');
                 let y = chars.next().unwrap_or('.');
+                // "N..." for files, "S<c><m><u>" for submodules: <c> = C when its commit changed
+                let sub = parts.get(2).copied().unwrap_or("N...").as_bytes();
+                if sub.first() == Some(&b'S') {
+                    if x != '.' {
+                        res.staged_submodules.push(file.to_string());
+                    }
+                    if y != '.' && sub.get(1) == Some(&b'C') {
+                        res.stale_submodules.push(file.to_string());
+                    }
+                }
                 let orig_for = |c: char| if c == 'R' || c == 'C' { orig } else { None };
                 if x != '.' {
                     res.staged.push(FileChange::new(file, &x.to_string(), orig_for(x)));
@@ -174,8 +189,20 @@ pub fn status(repo: &Path) -> Result<Status> {
     let r = git(repo, &["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"], &Opts::default())?;
     let dir = git_dir(repo)?;
     let mut res = parse_status(&r.text());
+    res.state = operation_in_progress(repo);
+    if matches!(res.state, Some(s) if s != RepoState::Rebase) {
+        if let Ok(msg) = fs::read_to_string(dir.join("MERGE_MSG")) {
+            res.merge_msg = msg.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n").trim().to_string();
+        }
+    }
+    Ok(res)
+}
+
+/// The merge, rebase, cherry-pick or revert that is stopped waiting for the user, if any.
+pub fn operation_in_progress(repo: &Path) -> Option<RepoState> {
+    let dir = git_dir(repo).ok()?;
     let ex = |p: &str| dir.join(p).exists();
-    res.state = if ex("rebase-merge") || ex("rebase-apply") {
+    if ex("rebase-merge") || ex("rebase-apply") {
         Some(RepoState::Rebase)
     } else if ex("MERGE_HEAD") {
         Some(RepoState::Merge)
@@ -185,13 +212,46 @@ pub fn status(repo: &Path) -> Result<Status> {
         Some(RepoState::Revert)
     } else {
         None
-    };
-    if matches!(res.state, Some(s) if s != RepoState::Rebase) {
-        if let Ok(msg) = fs::read_to_string(dir.join("MERGE_MSG")) {
-            res.merge_msg = msg.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n").trim().to_string();
-        }
     }
-    Ok(res)
+}
+
+/// Fails while a merge, rebase, cherry-pick or revert is stopped: switching branches or
+/// starting another one then mixes both and is hard to undo.
+pub fn require_no_operation(repo: &Path) -> Result<()> {
+    match operation_in_progress(repo) {
+        Some(s) => bail!("{}: termínala (o abórtala) antes de seguir.", s.label()),
+        None => Ok(()),
+    }
+}
+
+/// Fails if tracked files have uncommitted changes. Untracked files are not at risk.
+pub fn require_clean(repo: &Path, what: &str) -> Result<()> {
+    let s = status(repo)?;
+    if !s.staged.is_empty() || !s.conflicted.is_empty() || s.unstaged.iter().any(|f| !f.is_untracked()) {
+        bail!("Tienes cambios sin confirmar: confírmalos o guárdalos en un stash antes de {what}.");
+    }
+    Ok(())
+}
+
+/// Fails if `branch` is behind or has diverged from its upstream (as of the last fetch), like
+/// git-flow does: building on an outdated branch ends in conflicts or a rejected push.
+/// Being only ahead is fine.
+pub fn require_up_to_date(repo: &Path, branch: &str) -> Result<()> {
+    let up = format!("{branch}@{{upstream}}");
+    let Ok(r) = run(repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", &up], &Opts::default()) else { return Ok(()) };
+    if !r.ok() {
+        return Ok(());
+    }
+    let upstream = r.text().trim().to_string();
+    let range = format!("refs/heads/{branch}...{up}");
+    let counts = out(repo, &["rev-list", "--left-right", "--count", &range])?;
+    let mut it = counts.split_whitespace().map(|n| n.parse::<u32>().unwrap_or(0));
+    let (ahead, behind) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+    match (ahead, behind) {
+        (_, 0) => Ok(()),
+        (0, _) => bail!("«{branch}» está por detrás de «{upstream}»: actualízala (pull) antes de seguir."),
+        _ => bail!("«{branch}» y «{upstream}» han divergido: intégralas (pull) antes de seguir."),
+    }
 }
 
 fn parse_track(track: &str) -> (u32, u32, bool) {
@@ -622,14 +682,41 @@ pub fn unstage_all(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Discards tracked changes and moves untracked files to the trash.
-pub fn discard(repo: &Path, tracked: &[String], untracked: &[String]) -> Result<()> {
+/// Saves the uncommitted changes of tracked files as a stash entry without touching the
+/// working tree, so whatever is about to be discarded can be recovered from the stash list.
+/// Returns false when there was nothing to save. Skipped (false) while there are conflicts,
+/// since git cannot stash an unmerged index.
+pub fn backup_changes(repo: &Path, what: &str) -> Result<bool> {
+    if !unmerged_paths(repo).is_empty() {
+        return Ok(false);
+    }
+    let msg = format!("CodeSprout: copia antes de {what}");
+    let hash = out(repo, &["stash", "create", &msg])?.trim().to_string();
+    if hash.is_empty() {
+        return Ok(false);
+    }
+    git(repo, &["stash", "store", "-m", &msg, &hash], &Opts::default())
+        .map_err(|e| anyhow!("No se pudo guardar la copia de seguridad, así que no se ha descartado nada: {e}"))?;
+    Ok(true)
+}
+
+/// Discards tracked changes (after saving a copy in the stash list) and moves untracked files
+/// to the trash. Returns whether a copy was saved.
+pub fn discard(repo: &Path, tracked: &[String], untracked: &[String]) -> Result<bool> {
+    let mut saved = false;
     if !tracked.is_empty() {
+        saved = backup_changes(repo, "descartar")?;
         let input = pathspec_input(tracked);
         let mut args = vec!["checkout", "-q"];
         args.extend(FROM_STDIN);
         git(repo, &args, &Opts { input: Some(&input), ..Opts::literal() })?;
     }
+    trash_untracked(repo, untracked)?;
+    Ok(saved)
+}
+
+/// Moves repo-relative paths to the trash (the distro's for repositories inside WSL).
+fn trash_untracked(repo: &Path, untracked: &[String]) -> Result<()> {
     if wsl::locate(repo).is_some() {
         // Windows has no recycle bin for WSL folders; they go to the distro's trash
         let files = untracked.iter().map(|rel| safe_join(repo, rel)).collect::<Result<Vec<_>>>()?;
@@ -642,16 +729,24 @@ pub fn discard(repo: &Path, tracked: &[String], untracked: &[String]) -> Result<
     Ok(())
 }
 
-pub fn discard_all(repo: &Path, include_untracked: bool) -> Result<()> {
-    if has_head(repo) {
+/// Discards every change, saving a copy of the tracked ones in the stash list first; untracked
+/// files go to the trash instead of being deleted. Returns whether a copy was saved.
+pub fn discard_all(repo: &Path, include_untracked: bool) -> Result<bool> {
+    let saved = if has_head(repo) {
+        let saved = backup_changes(repo, "descartar todo")?;
         git(repo, &["reset", "--hard", "-q"], &Opts::default())?;
+        saved
     } else {
         unstage_all(repo)?;
-    }
+        false
+    };
     if include_untracked {
-        git(repo, &["clean", "-fd", "-q"], &Opts::default())?;
+        // untracked folders come as one "dir/" entry, so they are trashed whole
+        let list = out(repo, &["ls-files", "--others", "--exclude-standard", "--directory", "-z"])?;
+        let paths: Vec<String> = list.split('\0').map(|p| p.trim_end_matches('/')).filter(|p| !p.is_empty()).map(Into::into).collect();
+        trash_untracked(repo, &paths)?;
     }
-    Ok(())
+    Ok(saved)
 }
 
 pub fn apply_patch(repo: &Path, patch: &str, cached: bool, reverse: bool) -> Result<()> {
@@ -790,6 +885,66 @@ pub fn checkout(repo: &Path, reference: &str) -> Result<()> {
     Ok(())
 }
 
+/// What to do with uncommitted changes when switching to another branch or commit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PendingChanges {
+    /// Take them along: they are stashed, the switch happens and the stash is popped there, so
+    /// it works even when the destination changed the same files.
+    #[default]
+    Carry,
+    /// Leave them in a stash and arrive clean.
+    Stash,
+}
+
+fn stash_top(repo: &Path) -> Option<String> {
+    run(repo, &["rev-parse", "-q", "--verify", "refs/stash"], &Opts::default()).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
+}
+
+/// Pops the newest stash keeping what was staged; if the index cannot be restored as it was,
+/// pops it with everything unstaged.
+fn pop_keeping_index(repo: &Path) -> Result<OpResult> {
+    match conflict_aware(repo, &["stash", "pop", "--index", "stash@{0}"], &Opts::default()) {
+        Ok(r) => Ok(r),
+        Err(_) if unmerged_paths(repo).is_empty() => stash_apply(repo, "stash@{0}", true),
+        Err(e) => Err(e),
+    }
+}
+
+/// Runs `switch` (a checkout or branch creation) with the uncommitted changes handled as
+/// `pending` says. `dest` names the destination in messages. If `switch` fails the changes are
+/// restored where they were. With [`PendingChanges::Carry`], `conflicts` means they clashed
+/// with the destination: they are left in conflict and the stash is kept.
+pub fn switch_with(repo: &Path, pending: PendingChanges, dest: &str, switch: impl FnOnce() -> Result<()>) -> Result<OpResult> {
+    require_no_operation(repo)?;
+    let before = stash_top(repo);
+    let msg = match pending {
+        PendingChanges::Carry => format!("CodeSprout: cambios llevados a {dest}"),
+        PendingChanges::Stash => format!("Antes de cambiar a {dest}"),
+    };
+    stash_save(repo, &msg, true, false)?;
+    // `stash push` with nothing to save succeeds without creating an entry
+    let stashed = stash_top(repo) != before;
+    if let Err(e) = switch() {
+        if stashed {
+            pop_keeping_index(repo)?;
+        }
+        return Err(e);
+    }
+    if stashed && pending == PendingChanges::Carry {
+        let r = match pop_keeping_index(repo) {
+            Ok(r) => r,
+            Err(e) => bail!("Ya estás en {dest}, pero no se han podido aplicar tus cambios; siguen en el stash «{msg}».\n{e}"),
+        };
+        if r.conflicts {
+            return Ok(OpResult {
+                conflicts: true,
+                output: format!("Ya estás en {dest}, pero tus cambios chocan con ella. Resuelve los conflictos; el stash «{msg}» se conserva por si acaso."),
+            });
+        }
+    }
+    Ok(OpResult { conflicts: false, output: String::new() })
+}
+
 pub fn checkout_remote(repo: &Path, remote_ref: &str, local_name: &str) -> Result<()> {
     check_ref_name(repo, true, local_name)?;
     git(repo, &["checkout", "-b", local_name, "--track", remote_ref, "--"], &Opts::default())?;
@@ -820,9 +975,25 @@ pub fn rename_branch(repo: &Path, old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn delete_branch(repo: &Path, name: &str, force: bool) -> Result<()> {
+/// A deleted branch: where it pointed and how many of its commits no other branch, remote
+/// branch or tag contains (they are only reachable through that hash now).
+#[derive(Clone, Debug, Default)]
+pub struct DeletedBranch {
+    pub hash: String,
+    pub unmerged: usize,
+}
+
+pub fn delete_branch(repo: &Path, name: &str, force: bool) -> Result<DeletedBranch> {
+    let full = format!("refs/heads/{name}");
+    let hash = out(repo, &["rev-parse", "--verify", &full])?.trim().to_string();
+    // with --branches the pattern goes without "refs/heads/"
+    let exclude = format!("--exclude={name}");
+    let unmerged = out(repo, &["rev-list", "--count", &hash, "--not", &exclude, "--branches", "--remotes", "--tags"])
+        .ok()
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
     git(repo, &["branch", if force { "-D" } else { "-d" }, name], &Opts::default())?;
-    Ok(())
+    Ok(DeletedBranch { hash, unmerged })
 }
 
 /// Result of [`delete_gone_branches`].
@@ -841,15 +1012,17 @@ pub fn delete_gone_branches(repo: &Path, remote: Option<&str>) -> Result<GoneCle
     let gone = refs(repo)?.local.into_iter().filter(|b| b.gone && !b.current && remote.is_none_or(|r| b.upstream_remote.as_deref() == Some(r)));
     for b in gone {
         match delete_branch(repo, &b.name, false) {
-            Ok(()) => res.deleted.push(b.name),
+            Ok(_) => res.deleted.push(b.name),
             Err(_) => res.kept.push(b.name),
         }
     }
     Ok(res)
 }
 
+/// Uncommitted changes are set aside with `--autostash` and come back when the merge ends
+/// (also after resolving its conflicts or aborting it), so an abort cannot lose them.
 pub fn merge(repo: &Path, reference: &str, no_ff: bool) -> Result<OpResult> {
-    let mut args = vec!["merge", "--no-edit"];
+    let mut args = vec!["merge", "--no-edit", "--autostash"];
     if no_ff {
         args.push("--no-ff");
     }
@@ -858,7 +1031,7 @@ pub fn merge(repo: &Path, reference: &str, no_ff: bool) -> Result<OpResult> {
 }
 
 pub fn rebase(repo: &Path, onto: &str) -> Result<OpResult> {
-    conflict_aware(repo, &["rebase", onto], &Opts::default())
+    conflict_aware(repo, &["rebase", "--autostash", onto], &Opts::default())
 }
 
 pub fn cherry_pick(repo: &Path, hash: &str, is_merge: bool) -> Result<OpResult> {
@@ -872,9 +1045,11 @@ pub fn revert(repo: &Path, hash: &str, is_merge: bool) -> Result<OpResult> {
     conflict_aware(repo, &args, &Opts::default())
 }
 
-pub fn reset(repo: &Path, target: &str, mode: ResetMode) -> Result<()> {
+/// A hard reset saves the uncommitted changes in the stash list first. Returns whether it did.
+pub fn reset(repo: &Path, target: &str, mode: ResetMode) -> Result<bool> {
+    let saved = mode == ResetMode::Hard && backup_changes(repo, "reset hard")?;
     git(repo, &["reset", mode.flag(), target, "--"], &Opts::default())?;
-    Ok(())
+    Ok(saved)
 }
 
 pub fn abort_operation(repo: &Path, kind: RepoState) -> Result<()> {
@@ -927,15 +1102,44 @@ pub fn fetch(repo: &Path, remote: Option<&str>, prune: bool, op: Option<&OpHandl
     Ok(())
 }
 
+/// `git pull` in two steps: the fetch, the only part that can be cancelled, and then the merge
+/// or rebase, which runs to the end so the working tree is never left half updated.
+/// Uncommitted changes are set aside with `--autostash` and come back afterwards.
 pub fn pull(repo: &Path, remote: Option<&str>, branch: Option<&str>, use_rebase: bool, op: Option<&OpHandle>) -> Result<OpResult> {
-    let mut args = vec!["pull", "--progress", if use_rebase { "--rebase" } else { "--no-rebase" }];
-    if let Some(r) = remote {
-        args.push(r);
-        if let Some(b) = branch {
-            args.push(b);
+    let target = match (remote, branch) {
+        (Some(r), Some(b)) => {
+            git(repo, &["fetch", "--progress", r, b], &Opts::op(op))?;
+            "FETCH_HEAD".to_string()
         }
+        _ => {
+            let up = run(repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], &Opts::default())?;
+            if !up.ok() {
+                bail!("La rama actual no sigue a ninguna rama remota: indica de dónde traer los cambios.");
+            }
+            let remote_name = config_value(repo, &format!("branch.{}.remote", current_branch(repo).unwrap_or_default()));
+            git(repo, &["fetch", "--progress", if remote_name.is_empty() { "origin" } else { &remote_name }], &Opts::op(op))?;
+            "@{upstream}".to_string()
+        }
+    };
+    if op.is_some_and(|o| o.is_cancelled()) {
+        bail!("Operación cancelada.");
     }
-    conflict_aware(repo, &args, &Opts::op(op))
+    if use_rebase {
+        return conflict_aware(repo, &["rebase", "--autostash", &target], &Opts::default());
+    }
+    let mut args = vec!["merge", "--no-edit", "--autostash"];
+    match config_value(repo, "pull.ff").as_str() {
+        "only" => args.push("--ff-only"),
+        "false" => args.push("--no-ff"),
+        _ => {}
+    }
+    args.push(&target);
+    conflict_aware(repo, &args, &Opts::default())
+}
+
+fn current_branch(repo: &Path) -> Option<String> {
+    let r = run(repo, &["symbolic-ref", "-q", "--short", "HEAD"], &Opts::default()).ok()?;
+    r.ok().then(|| r.text().trim().to_string())
 }
 
 /// Updates a branch that is not checked out from `remote/branch` without switching to it.
@@ -971,7 +1175,9 @@ pub fn push(repo: &Path, a: &PushArgs, op: Option<&OpHandle>) -> Result<()> {
         args.push("--set-upstream");
     }
     if a.force {
-        args.push("--force-with-lease");
+        // the lease alone trusts the remote-tracking branch, which an automatic fetch may have
+        // moved to commits never seen here; --force-if-includes refuses in that case
+        args.extend(["--force-with-lease", "--force-if-includes"]);
     }
     if a.tags {
         args.push("--follow-tags");
@@ -1106,6 +1312,88 @@ pub fn ignore_paths(repo: &Path, paths: &[String], by_extension: bool) -> Result
             _ => format!("/{}", escape_ignore(&rel.replace('\\', "/"))),
         };
         add_to_gitignore(repo, &pattern)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- recovery and environment
+
+/// The lock file named in a git error like "Unable to create '…/index.lock': File exists",
+/// as a local path. Only `.lock` files inside the repository's git directory are returned.
+pub fn lock_in_error(repo: &Path, msg: &str) -> Option<PathBuf> {
+    let start = msg.find("Unable to create '")? + "Unable to create '".len();
+    let end = msg[start..].find('\'')? + start;
+    let raw = &msg[start..end];
+    if !raw.ends_with(".lock") {
+        return None;
+    }
+    let p = wsl::native_path(repo, raw);
+    let dir = git_dir(repo).ok()?;
+    (normalize(&p).starts_with(normalize(&dir)) && p.exists()).then_some(p)
+}
+
+/// How long ago a file was last modified.
+pub fn file_age(p: &Path) -> Option<std::time::Duration> {
+    fs::metadata(p).ok()?.modified().ok()?.elapsed().ok()
+}
+
+/// Removes a lock file left behind by a git process that died. Only `.lock` files.
+pub fn remove_lock(p: &Path) -> Result<()> {
+    if p.extension().and_then(|e| e.to_str()) != Some("lock") {
+        bail!("{} no es un archivo de bloqueo.", p.display());
+    }
+    fs::remove_file(p).map_err(|e| anyhow!("No se pudo eliminar {}: {e}", p.display()))
+}
+
+/// The folder git refuses to open because it belongs to another user ("detected dubious
+/// ownership"), as git wrote it in the suggested `safe.directory` command.
+pub fn dubious_dir(msg: &str) -> Option<String> {
+    if !msg.contains("dubious ownership") {
+        return None;
+    }
+    let line = msg.lines().find(|l| l.contains("safe.directory"))?;
+    let raw = line.split("safe.directory").nth(1)?.trim();
+    let dir = raw.trim_matches(|c| c == '\'' || c == '"').trim();
+    (!dir.is_empty()).then(|| dir.to_string())
+}
+
+/// Trusts a folder owned by another user (`safe.directory`, global). `cwd` is any existing
+/// folder run by the same git (the repository itself works).
+pub fn trust_directory(cwd: &Path, dir: &str) -> Result<()> {
+    git(cwd, &["config", "--global", "--add", "safe.directory", dir], &Opts::default())?;
+    Ok(())
+}
+
+/// Parses "git version 2.45.1.windows.1" into (2, 45, 1).
+pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let v = s.split_whitespace().find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
+    let mut it = v.split('.').map(|n| n.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().ok());
+    Some((it.next()??, it.next()??, it.next().flatten().unwrap_or(0)))
+}
+
+/// Oldest git CodeSprout works with (`--force-if-includes` arrived in 2.30).
+pub const MIN_GIT: (u32, u32, u32) = (2, 30, 0);
+
+/// Whether a git version has the fixes for the latest known vulnerabilities (CVE-2025-48384
+/// and earlier, exploitable by cloning a malicious repository). Each maintained series got
+/// its own fixed release. Only meaningful for builds that follow upstream numbering (Git for
+/// Windows): Linux distributions backport fixes without changing the version.
+pub fn has_security_fixes(v: (u32, u32, u32)) -> bool {
+    let fixed = [(2, 43, 7), (2, 44, 4), (2, 45, 4), (2, 46, 4), (2, 47, 3), (2, 48, 2), (2, 49, 1), (2, 50, 1)];
+    if (v.0, v.1) > (2, 50) {
+        return true;
+    }
+    fixed.iter().any(|f| (f.0, f.1) == (v.0, v.1) && v >= *f)
+}
+
+/// Fails if the git that runs for `repo` (the distro's for WSL) is older than [`MIN_GIT`].
+pub fn require_git_version(repo: &Path) -> Result<()> {
+    let text = out(repo, &["--version"])?;
+    if let Some(v) = parse_version(&text) {
+        if v < MIN_GIT {
+            let (a, b, c) = MIN_GIT;
+            bail!("{} es demasiado antiguo: CodeSprout necesita Git {a}.{b}.{c} o posterior. Actualízalo para abrir este repositorio.", text.trim());
+        }
     }
     Ok(())
 }

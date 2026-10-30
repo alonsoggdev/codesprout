@@ -106,6 +106,17 @@ pub fn lfs_version() -> Option<String> {
     r.ok().then(|| r.text().trim().to_string())
 }
 
+/// The repository stores files with Git LFS (`filter=lfs` in its attributes) but the git that
+/// runs for it has no git-lfs: checkouts would leave pointer files instead of the content, and
+/// committing them would replace the real files.
+pub fn lfs_missing(repo: &Path) -> bool {
+    let uses = [".gitattributes", ".git/info/attributes"]
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(repo.join(f)).ok())
+        .any(|t| t.lines().any(|l| !l.trim_start().starts_with('#') && l.contains("filter=lfs")));
+    uses && !run(repo, &["lfs", "version"], &Opts::default()).map(|r| r.ok()).unwrap_or(false)
+}
+
 #[derive(Clone, Debug)]
 pub struct LfsFile {
     pub path: String,
@@ -473,4 +484,29 @@ pub fn run_custom_action(program: &str, args: &str, ctx: &ActionContext) -> Resu
         bail!("«{program}» terminó con error:\n{}", text.trim());
     }
     Ok(text.trim().to_string())
+}
+
+// ---------------------------------------------------------------- maintenance
+
+/// Verifies every object of the repository against its hash and that nothing is missing
+/// (`git fsck --full`). Returns the problems found, empty when it is healthy. Dangling objects
+/// (left by rebases, resets or dropped stashes) are normal and not reported.
+pub fn check_integrity(repo: &Path, op: Option<&OpHandle>) -> Result<Vec<String>> {
+    let r = run(repo, &["fsck", "--full", "--no-dangling", "--no-progress"], &Opts::op(op))?;
+    if r.cancelled {
+        bail!("Operación cancelada.");
+    }
+    let text = format!("{}\n{}", r.text(), r.stderr);
+    let problems: Vec<String> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("Checking ")).map(Into::into).collect();
+    if !r.ok() && problems.is_empty() {
+        bail!("git fsck terminó con código {:?}", r.code);
+    }
+    Ok(problems)
+}
+
+/// Packs objects and prunes what is no longer needed (`git maintenance run --task=gc`), which
+/// keeps big repositories fast. Safe: unreachable objects younger than two weeks are kept.
+pub fn optimize(repo: &Path, op: Option<&OpHandle>) -> Result<()> {
+    git(repo, &["maintenance", "run", "--task=gc"], &Opts::op(op))?;
+    Ok(())
 }

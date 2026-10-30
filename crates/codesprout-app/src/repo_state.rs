@@ -327,6 +327,12 @@ pub struct RepoTab {
     pub flow: Option<FlowConfig>,
     pub last_fetch: Instant,
     pub template: Option<String>,
+    /// The last operation that «Deshacer» would undo, read from the reflog on each refresh.
+    pub undo: Option<codesprout_core::history::Undo>,
+    /// The user already accepted committing the staged submodule changes.
+    pub submodules_confirmed: bool,
+    /// Whether the Git LFS check already ran (once per tab).
+    pub lfs_checked: bool,
 }
 
 impl RepoTab {
@@ -380,6 +386,9 @@ impl RepoTab {
             flow: None,
             last_fetch: Instant::now(),
             template: None,
+            undo: None,
+            submodules_confirmed: false,
+            lfs_checked: false,
         }
     }
 

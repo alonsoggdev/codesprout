@@ -287,12 +287,16 @@ fn stash_cherry_pick_revert_reset() {
     assert!(!repo.join("untracked.txt").exists());
     g::stash_apply(&repo, "stash@{0}", false).unwrap();
     assert_eq!(read(&repo, "s.txt"), "2\n");
-    g::discard_all(&repo, true).unwrap();
+    // discarding keeps a copy on top of the stash list
+    assert!(g::discard_all(&repo, true).unwrap());
     assert_eq!(read(&repo, "s.txt"), "1\n");
     assert!(!repo.join("untracked.txt").exists());
+    assert_eq!(g::refs(&repo).unwrap().stashes.len(), 2);
+    g::stash_drop(&repo, "stash@{0}").unwrap();
     g::stash_apply(&repo, "stash@{0}", true).unwrap();
     assert!(g::refs(&repo).unwrap().stashes.is_empty());
     g::discard_all(&repo, true).unwrap();
+    g::stash_drop(&repo, "stash@{0}").unwrap();
     write(&repo, "s.txt", "3\n");
     g::stash_save(&repo, "", false, false).unwrap();
     g::stash_drop(&repo, "stash@{0}").unwrap();
@@ -785,4 +789,307 @@ fn branch_names_are_cleaned_while_typing_and_accepted_by_git() {
         g::check_ref_name(&repo, true, &name).unwrap_or_else(|e| panic!("{name:?}: {e}"));
     }
     assert_eq!(g::branch_name(" ¿? "), "");
+}
+
+#[test]
+fn switching_with_pending_changes_keeps_them_safe() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "pending");
+    write(&repo, "a.txt", "a\n");
+    write(&repo, "b.txt", "b\n");
+    commit_all(&repo, "inicio");
+    g::create_branch(&repo, "other", None, false).unwrap();
+
+    // carried: what was staged stays staged, untracked files come along
+    write(&repo, "a.txt", "staged\n");
+    g::stage(&repo, &s(&["a.txt"])).unwrap();
+    write(&repo, "b.txt", "unstaged\n");
+    write(&repo, "new.txt", "new\n");
+    let r = g::switch_with(&repo, g::PendingChanges::Carry, "other", || g::checkout(&repo, "other")).unwrap();
+    assert!(!r.conflicts);
+    let st = g::status(&repo).unwrap();
+    assert_eq!(st.branch.as_deref(), Some("other"));
+    assert_eq!(paths(&st.staged), ["a.txt"]);
+    assert!(paths(&st.unstaged).contains(&"b.txt") && paths(&st.unstaged).contains(&"new.txt"));
+    assert!(g::refs(&repo).unwrap().stashes.is_empty());
+
+    // a failed switch puts the changes back where they were
+    assert!(g::switch_with(&repo, g::PendingChanges::Carry, "nope", || g::checkout(&repo, "nope")).is_err());
+    assert_eq!(read(&repo, "b.txt"), "unstaged\n");
+    assert!(g::refs(&repo).unwrap().stashes.is_empty());
+
+    // left in a stash
+    g::switch_with(&repo, g::PendingChanges::Stash, "main", || g::checkout(&repo, "main")).unwrap();
+    assert_eq!(g::status(&repo).unwrap().change_count(), 0);
+    assert_eq!(g::refs(&repo).unwrap().stashes.len(), 1);
+
+    // carried changes that clash with the destination stay in conflict, and in the stash
+    g::stash_apply(&repo, "stash@{0}", true).unwrap();
+    g::stage_all(&repo).unwrap();
+    g::commit(&repo, "en main", CommitFlags::default()).unwrap();
+    write(&repo, "b.txt", "otra cosa\n");
+    let r = g::switch_with(&repo, g::PendingChanges::Carry, "other", || g::checkout(&repo, "other")).unwrap();
+    assert!(r.conflicts);
+    assert_eq!(g::refs(&repo).unwrap().stashes.len(), 1);
+    assert_eq!(g::status(&repo).unwrap().branch.as_deref(), Some("other"));
+}
+
+#[test]
+fn operations_in_progress_block_switching() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "busy");
+    write(&repo, "c.txt", "base\n");
+    commit_all(&repo, "base");
+    g::create_branch(&repo, "other", None, true).unwrap();
+    write(&repo, "c.txt", "other\n");
+    commit_all(&repo, "other");
+    g::checkout(&repo, "main").unwrap();
+    write(&repo, "c.txt", "main\n");
+    commit_all(&repo, "main");
+    assert!(g::merge(&repo, "other", false).unwrap().conflicts);
+    assert_eq!(g::operation_in_progress(&repo), Some(RepoState::Merge));
+    let e = g::switch_with(&repo, g::PendingChanges::Carry, "other", || g::checkout(&repo, "other")).unwrap_err();
+    assert!(e.to_string().contains("Fusión en curso"));
+    assert!(g::require_no_operation(&repo).is_err());
+    g::abort_operation(&repo, RepoState::Merge).unwrap();
+    assert!(g::require_no_operation(&repo).is_ok());
+}
+
+#[test]
+fn autostash_brings_changes_back_after_merge_and_pull() {
+    let tmp = tmpdir();
+    let root = tmp.path();
+    let bare = root.join("origin.git");
+    sh(root, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+    let a = new_repo(root, "a");
+    write(&a, "f.txt", "1\n");
+    write(&a, "local.txt", "x\n");
+    commit_all(&a, "a1");
+    g::add_remote(&a, "origin", bare.to_str().unwrap()).unwrap();
+    g::push(&a, &PushArgs { remote: "origin".into(), branch: "main".into(), set_upstream: true, ..Default::default() }, None).unwrap();
+    let b = g::clone(bare.to_str().unwrap(), &root.join("b"), None).unwrap();
+    sh(&b, &["config", "user.name", "B"]);
+    sh(&b, &["config", "user.email", "b@example.com"]);
+    write(&b, "f.txt", "2\n");
+    commit_all(&b, "b1");
+    g::push(&b, &PushArgs { remote: "origin".into(), branch: "main".into(), ..Default::default() }, None).unwrap();
+
+    // pull without naming the remote uses the upstream; the local change survives
+    write(&a, "local.txt", "editado\n");
+    assert!(!g::pull(&a, None, None, false, None).unwrap().conflicts);
+    assert_eq!(read(&a, "f.txt"), "2\n");
+    assert_eq!(read(&a, "local.txt"), "editado\n");
+    assert!(g::refs(&a).unwrap().stashes.is_empty());
+
+    // a merge with a dirty tree that conflicts: aborting gives the change back
+    g::discard_all(&a, false).unwrap();
+    g::stash_drop(&a, "stash@{0}").unwrap();
+    g::create_branch(&a, "x", None, true).unwrap();
+    write(&a, "f.txt", "x\n");
+    commit_all(&a, "x");
+    g::checkout(&a, "main").unwrap();
+    write(&a, "f.txt", "main\n");
+    commit_all(&a, "main");
+    write(&a, "local.txt", "sucio\n");
+    assert!(g::merge(&a, "x", false).unwrap().conflicts);
+    g::abort_operation(&a, RepoState::Merge).unwrap();
+    assert_eq!(read(&a, "local.txt"), "sucio\n");
+}
+
+#[test]
+fn force_push_refuses_commits_only_fetched_in_the_background() {
+    let tmp = tmpdir();
+    let root = tmp.path();
+    let bare = root.join("origin.git");
+    sh(root, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+    let a = new_repo(root, "a");
+    write(&a, "f.txt", "1\n");
+    commit_all(&a, "a1");
+    g::add_remote(&a, "origin", bare.to_str().unwrap()).unwrap();
+    let push = |repo: &Path, force: bool| {
+        g::push(repo, &PushArgs { remote: "origin".into(), branch: "main".into(), set_upstream: true, force, ..Default::default() }, None)
+    };
+    push(&a, false).unwrap();
+    let b = g::clone(bare.to_str().unwrap(), &root.join("b"), None).unwrap();
+    sh(&b, &["config", "user.name", "B"]);
+    sh(&b, &["config", "user.email", "b@example.com"]);
+    write(&b, "f.txt", "de b\n");
+    commit_all(&b, "b1");
+    push(&b, false).unwrap();
+
+    // A rewrites its commit while an automatic fetch brings B's work without A looking at it
+    write(&a, "f.txt", "reescrito\n");
+    g::stage_all(&a).unwrap();
+    g::commit(&a, "a1 bis", CommitFlags { amend: true, ..Default::default() }).unwrap();
+    g::fetch(&a, None, true, None).unwrap();
+    assert!(push(&a, true).is_err());
+    // once integrated, forcing is allowed
+    let remote_head = sh(&a, &["rev-parse", "origin/main"]).trim().to_string();
+    g::reset(&a, &remote_head, ResetMode::Hard).unwrap();
+    write(&a, "f.txt", "a encima de b\n");
+    g::stage_all(&a).unwrap();
+    g::commit(&a, "b1 bis", CommitFlags { amend: true, ..Default::default() }).unwrap();
+    push(&a, true).unwrap();
+}
+
+#[test]
+fn discarding_and_hard_reset_keep_a_copy() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "backup");
+    write(&repo, "f.txt", "1\n");
+    let base = commit_all(&repo, "uno");
+    write(&repo, "f.txt", "2\n");
+    commit_all(&repo, "dos");
+
+    write(&repo, "f.txt", "perdido?\n");
+    assert!(g::discard(&repo, &s(&["f.txt"]), &[]).unwrap());
+    assert_eq!(read(&repo, "f.txt"), "2\n");
+    let refs = g::refs(&repo).unwrap();
+    assert_eq!(refs.stashes.len(), 1);
+    assert!(refs.stashes[0].message.contains("copia antes de descartar"));
+    g::stash_apply(&repo, "stash@{0}", true).unwrap();
+    assert_eq!(read(&repo, "f.txt"), "perdido?\n");
+
+    assert!(g::reset(&repo, &base, ResetMode::Hard).unwrap());
+    assert_eq!(read(&repo, "f.txt"), "1\n");
+    assert!(g::refs(&repo).unwrap().stashes[0].message.contains("reset hard"));
+    // nothing to save, no copy
+    assert!(!g::discard_all(&repo, false).unwrap());
+    assert_eq!(g::refs(&repo).unwrap().stashes.len(), 1);
+}
+
+#[test]
+fn deleting_a_branch_reports_its_unmerged_commits() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "del");
+    write(&repo, "f.txt", "1\n");
+    commit_all(&repo, "uno");
+    g::create_branch(&repo, "tmp", None, true).unwrap();
+    write(&repo, "g.txt", "1\n");
+    commit_all(&repo, "a");
+    write(&repo, "g.txt", "2\n");
+    let tip = commit_all(&repo, "b");
+    g::checkout(&repo, "main").unwrap();
+    assert!(g::delete_branch(&repo, "tmp", false).is_err());
+    let d = g::delete_branch(&repo, "tmp", true).unwrap();
+    assert_eq!((d.hash.as_str(), d.unmerged), (tip.as_str(), 2));
+}
+
+#[test]
+fn undo_moves_the_branch_back_and_redoes() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "undo");
+    write(&repo, "f.txt", "1\n");
+    let first = commit_all(&repo, "uno");
+    assert_eq!(history::last_undo(&repo), None);
+    write(&repo, "f.txt", "2\n");
+    let second = commit_all(&repo, "dos");
+    let u = history::last_undo(&repo).unwrap();
+    assert!(u.action.starts_with("commit"));
+    assert!(!u.published);
+    write(&repo, "otro.txt", "sin confirmar\n");
+    history::undo(&repo, &u).unwrap();
+    assert_eq!(g::refs(&repo).unwrap().head.as_deref(), Some(first.as_str()));
+    assert!(repo.join("otro.txt").exists());
+    // the undone commit's changes are staged again
+    assert_eq!(paths(&g::status(&repo).unwrap().staged), ["f.txt"]);
+    assert_eq!(read(&repo, "f.txt"), "2\n");
+    // undoing the undo brings the commit back
+    let redo = history::last_undo(&repo).unwrap();
+    assert!(redo.action.starts_with("undo (soft)"));
+    history::undo(&repo, &redo).unwrap();
+    assert_eq!(g::refs(&repo).unwrap().head.as_deref(), Some(second.as_str()));
+    assert!(g::status(&repo).unwrap().staged.is_empty());
+    // a merge is undone keeping the files as they were before it
+    g::create_branch(&repo, "m", None, true).unwrap();
+    write(&repo, "m.txt", "m\n");
+    commit_all(&repo, "m");
+    g::checkout(&repo, "main").unwrap();
+    g::merge(&repo, "m", true).unwrap();
+    let u = history::last_undo(&repo).unwrap();
+    assert!(matches!(u.kind, history::UndoKind::Move { soft: false, .. }), "{u:?}");
+    history::undo(&repo, &u).unwrap();
+    assert_eq!(g::refs(&repo).unwrap().head.as_deref(), Some(second.as_str()));
+    assert!(!repo.join("m.txt").exists());
+    g::delete_branch(&repo, "m", true).unwrap();
+    // a checkout is undone by going back
+    g::create_branch(&repo, "x", None, true).unwrap();
+    let u = history::last_undo(&repo).unwrap();
+    assert_eq!(u.kind, history::UndoKind::Checkout { previous: "main".into() });
+    history::undo(&repo, &u).unwrap();
+    assert_eq!(g::refs(&repo).unwrap().current_branch.as_deref(), Some("main"));
+    // a stale undo is refused
+    assert!(history::undo(&repo, &u).is_err());
+}
+
+#[test]
+fn integrity_check_lfs_and_helpers() {
+    let tmp = tmpdir();
+    let repo = new_repo(tmp.path(), "fsck");
+    write(&repo, "f.txt", "1\n");
+    commit_all(&repo, "uno");
+    assert!(extras::check_integrity(&repo, None).unwrap().is_empty());
+    extras::optimize(&repo, None).unwrap();
+    // corrupt an object: fsck must notice
+    let blob = sh(&repo, &["rev-parse", "HEAD:f.txt"]).trim().to_string();
+    let obj = g::git_dir(&repo).unwrap().join("objects").join(&blob[..2]).join(&blob[2..]);
+    if obj.exists() {
+        let mut perm = fs::metadata(&obj).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perm.set_readonly(false);
+        fs::set_permissions(&obj, perm).unwrap();
+        fs::write(&obj, b"basura").unwrap();
+        assert!(!extras::check_integrity(&repo, None).unwrap().is_empty());
+    }
+
+    let other = new_repo(tmp.path(), "lfs");
+    write(&other, ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    assert_eq!(extras::lfs_missing(&other), extras::lfs_version().is_none());
+
+    assert_eq!(g::parse_version("git version 2.45.1.windows.1"), Some((2, 45, 1)));
+    assert_eq!(g::parse_version("git version 2.39.5 (Apple Git-154)"), Some((2, 39, 5)));
+    assert!(!g::has_security_fixes((2, 45, 1)));
+    assert!(g::has_security_fixes((2, 45, 4)));
+    assert!(g::has_security_fixes((2, 51, 0)));
+    assert!(!g::has_security_fixes((2, 42, 9)));
+    let msg = "fatal: detected dubious ownership in repository at '/srv/x'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /srv/x";
+    assert_eq!(g::dubious_dir(msg).as_deref(), Some("/srv/x"));
+    let lock = g::git_dir(&repo).unwrap().join("index.lock");
+    fs::write(&lock, "").unwrap();
+    let e = g::stage_all(&repo).unwrap_err().to_string();
+    let found = g::lock_in_error(&repo, &e).expect("lock en el error");
+    g::remove_lock(&found).unwrap();
+    assert!(g::stage_all(&repo).is_ok());
+}
+
+#[test]
+fn flow_refuses_outdated_bases_and_dirty_finish() {
+    let tmp = tmpdir();
+    let root = tmp.path();
+    let bare = root.join("origin.git");
+    sh(root, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+    let a = new_repo(root, "a");
+    write(&a, "f.txt", "1\n");
+    commit_all(&a, "uno");
+    flow::init(&a, &Default::default()).unwrap();
+    g::add_remote(&a, "origin", bare.to_str().unwrap()).unwrap();
+    for b in ["main", "develop"] {
+        g::push(&a, &PushArgs { remote: "origin".into(), branch: b.into(), set_upstream: true, ..Default::default() }, None).unwrap();
+    }
+    let b = g::clone(bare.to_str().unwrap(), &root.join("b"), None).unwrap();
+    sh(&b, &["config", "user.name", "B"]);
+    sh(&b, &["config", "user.email", "b@example.com"]);
+    g::checkout_remote(&b, "origin/develop", "develop").unwrap();
+    write(&b, "f.txt", "de b\n");
+    commit_all(&b, "b");
+    g::push(&b, &PushArgs { remote: "origin".into(), branch: "develop".into(), ..Default::default() }, None).unwrap();
+
+    g::fetch(&a, None, false, None).unwrap();
+    let e = flow::start(&a, flow::FlowKind::Feature, "x", Default::default()).unwrap_err();
+    assert!(e.to_string().contains("por detrás"), "{e}");
+    // a hotfix starts from main, which is up to date
+    flow::start(&a, flow::FlowKind::Hotfix, "1.0.1", Default::default()).unwrap();
+    write(&a, "f.txt", "arreglo\n");
+    let e = flow::finish(&a, flow::FlowKind::Hotfix, "1.0.1", &Default::default()).unwrap_err();
+    assert!(e.to_string().contains("cambios sin confirmar"), "{e}");
 }
