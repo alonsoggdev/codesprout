@@ -127,23 +127,15 @@ fn require(repo: &Path) -> Result<FlowConfig> {
     }
 }
 
-/// What to do with uncommitted changes when starting a feature, release or hotfix.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PendingChanges {
-    /// Take them to the new branch: they are stashed, the branch is created from its base and
-    /// the stash is popped there, so it works even if the base differs from the current branch.
-    #[default]
-    Carry,
-    /// Leave them in a stash and start the branch clean.
-    Stash,
+pub use crate::repo::PendingChanges;
+
+fn base_of(cfg: &FlowConfig, kind: FlowKind) -> &str {
+    if kind == FlowKind::Hotfix { &cfg.master } else { &cfg.develop }
 }
 
-fn stash_top(repo: &Path) -> Option<String> {
-    run(repo, &["rev-parse", "-q", "--verify", "refs/stash"], &Opts::default()).ok().filter(|o| o.ok()).map(|o| o.text().trim().to_string())
-}
-
-/// Creates the branch and checks it out. `output` is the new branch name; `conflicts` means the
-/// carried changes clashed with the base: they are left in conflict and the stash is kept.
+/// Creates the branch from its base and checks it out, with the uncommitted changes handled as
+/// `pending` says (see [`repo::switch_with`]). `output` is the new branch name; `conflicts`
+/// means the carried changes clashed with the base.
 pub fn start(repo: &Path, kind: FlowKind, name: &str, pending: PendingChanges) -> Result<OpResult> {
     let cfg = require(repo)?;
     let name = name.trim();
@@ -151,36 +143,15 @@ pub fn start(repo: &Path, kind: FlowKind, name: &str, pending: PendingChanges) -
         bail!("Escribe un nombre.");
     }
     let branch = format!("{}{}", cfg.prefix(kind), name);
-    let base = if kind == FlowKind::Hotfix { &cfg.master } else { &cfg.develop };
+    let base = base_of(&cfg, kind);
     repo::check_ref_name(repo, true, &branch)?;
     if branch_exists(repo, &branch) {
         bail!("Ya existe la rama «{branch}».");
     }
-    let before = stash_top(repo);
-    let msg = match pending {
-        PendingChanges::Carry => format!("CodeSprout: cambios para {branch}"),
-        PendingChanges::Stash => format!("Antes de empezar {branch}"),
-    };
-    repo::stash_save(repo, &msg, true, false)?;
-    // `stash push` with nothing to save succeeds without creating an entry
-    let stashed = stash_top(repo) != before;
-    if let Err(e) = repo::create_branch(repo, &branch, Some(base), true) {
-        if stashed {
-            repo::stash_apply(repo, "stash@{0}", true)?;
-        }
-        return Err(e);
-    }
-    if stashed && pending == PendingChanges::Carry {
-        let r = match repo::stash_apply(repo, "stash@{0}", true) {
-            Ok(r) => r,
-            Err(e) => bail!("Rama {branch} creada, pero no se han podido aplicar tus cambios; siguen en el stash «{msg}».\n{e}"),
-        };
-        if r.conflicts {
-            return Ok(OpResult {
-                conflicts: true,
-                output: format!("Rama {branch} creada, pero tus cambios chocan con {base}. Resuelve los conflictos; el stash «{msg}» se conserva por si acaso."),
-            });
-        }
+    repo::require_up_to_date(repo, base)?;
+    let r = repo::switch_with(repo, pending, &branch, || repo::create_branch(repo, &branch, Some(base), true))?;
+    if r.conflicts {
+        return Ok(r);
     }
     Ok(OpResult { conflicts: false, output: branch })
 }
@@ -225,6 +196,15 @@ pub fn finish(repo: &Path, kind: FlowKind, name: &str, o: &FinishOptions) -> Res
     let branch = format!("{}{}", cfg.prefix(kind), name);
     if !branch_exists(repo, &branch) {
         bail!("No existe la rama «{branch}».");
+    }
+    // finishing switches branches and merges: with changes on top, aborting a conflicted merge
+    // could not give them back
+    repo::require_no_operation(repo)?;
+    repo::require_clean(repo, "finalizar")?;
+    repo::require_up_to_date(repo, &branch)?;
+    repo::require_up_to_date(repo, &cfg.develop)?;
+    if kind != FlowKind::Feature {
+        repo::require_up_to_date(repo, &cfg.master)?;
     }
     let mut log = Vec::new();
     match kind {

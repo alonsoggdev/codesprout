@@ -115,9 +115,11 @@ fn kill_tree(pid: u32) {
         hide_window(&mut cmd);
         let _ = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn();
     }
+    // the process leads its own group (see `collect`): the whole group gets the signal, so
+    // helpers like ssh or git-remote-https stop too
     #[cfg(not(windows))]
     {
-        let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).spawn();
+        let _ = Command::new("kill").args(["-TERM", "--", &format!("-{pid}")]).spawn();
     }
 }
 
@@ -201,6 +203,11 @@ pub fn run(cwd: &Path, args: &[&str], opts: &Opts) -> Result<Output> {
 pub(crate) fn collect(mut cmd: Command, opts: &Opts) -> Result<Output> {
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_window(&mut cmd);
+    #[cfg(unix)]
+    if opts.op.is_some() {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow!("No se encontró Git. Instálalo (https://git-scm.com) y asegúrate de que está en el PATH.")

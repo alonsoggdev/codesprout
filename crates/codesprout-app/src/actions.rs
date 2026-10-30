@@ -7,7 +7,7 @@ use std::time::Instant;
 use codesprout_core::extras;
 use codesprout_core::history;
 use codesprout_core::hosting::{self, RemoteRef};
-use codesprout_core::repo::{self as git, CommitFlags, PushArgs};
+use codesprout_core::repo::{self as git, CommitFlags, PendingChanges, PushArgs};
 use codesprout_core::{DiffOptions, FileChange, OpHandle, OpResult, RepoState, ResetMode};
 
 use crate::app::{App, Progress, ToastKind};
@@ -184,7 +184,9 @@ impl App {
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        if let Some(p) = &mut app.progress {
+                        if app.offer_lock_removal(&msg) {
+                            app.progress = None;
+                        } else if let Some(p) = &mut app.progress {
                             p.done = Some(Err(friendly_error(&msg)));
                         }
                     }
@@ -195,12 +197,39 @@ impl App {
     }
 
     pub fn show_git_error(&mut self, title: &str, msg: &str) {
+        if self.offer_lock_removal(msg) {
+            return;
+        }
         let identity = ["user.email", "user.name", "tell me who you are", "empty ident"].iter().any(|k| msg.to_lowercase().contains(k));
         if identity {
             self.dialogs.push(Dialog::identity_needed(msg));
         } else {
             self.error_dialog(title, &friendly_error(msg));
         }
+    }
+
+    /// A git error caused by a lock file: explains it and offers to remove it. Returns false if
+    /// `msg` is about something else.
+    pub fn offer_lock_removal(&mut self, msg: &str) -> bool {
+        let Some(lock) = self.path().and_then(|p| git::lock_in_error(&p, msg)) else { return false };
+        let name = lock.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let age = git::file_age(&lock).map(|d| d.as_secs()).unwrap_or(0);
+        let ago = match age {
+            0..=59 => format!("{age} s"),
+            60..=3599 => format!("{} min", age / 60),
+            _ => format!("{} h", age / 3600),
+        };
+        let detail = format!(
+            "El bloqueo ({name}) se creó hace {ago}. Elimínalo solo si no hay ningún otro programa usando Git en este repositorio (un editor, una terminal…); si lo hay, espera a que termine y vuelve a intentarlo."
+        );
+        self.confirm("Repositorio bloqueado", &friendly_error(msg), Some(detail), "Eliminar el bloqueo", true, move |app| match git::remove_lock(&lock) {
+            Ok(()) => {
+                app.ok("Bloqueo eliminado: ya puedes repetir la operación");
+                app.refresh(false);
+            }
+            Err(e) => app.toast(e.to_string(), ToastKind::Error),
+        });
+        true
     }
 
     pub fn handle_conflicts(&mut self, r: &OpResult, what: &str) -> bool {
@@ -733,10 +762,10 @@ impl App {
             msg = first.to_uppercase() + &msg[1..];
         }
         let title = if files.len() == 1 { format!("Descartar «{}»", crate::widgets::split_path(&files[0].path).1) } else { "Descartar cambios".into() };
-        let detail = (!tracked.is_empty()).then(|| "Los cambios descartados de archivos con seguimiento no se pueden recuperar.".to_string());
+        let detail = (!tracked.is_empty()).then(|| "Antes se guarda una copia en la lista de stashes, por si necesitas recuperarlos.".to_string());
         self.confirm(&title, &msg, detail, "Descartar", true, move |app| {
             let Some(p) = app.path() else { return };
-            app.op("Descartar", move || git::discard(&p, &tracked, &untracked), |_, _| {});
+            app.op("Descartar", move || git::discard(&p, &tracked, &untracked), |app, saved| app.backup_note(saved));
         });
     }
 
@@ -782,7 +811,16 @@ impl App {
 
     pub fn apply_partial(&mut self, patch: String, cached: bool, reverse: bool) {
         let Some(p) = self.path() else { return };
-        self.op("Aplicar cambios parciales", move || git::apply_patch(&p, &patch, cached, reverse), |_, _| {});
+        // discarding lines from the working tree: keep a copy first
+        let discard = reverse && !cached;
+        self.op(
+            "Aplicar cambios parciales",
+            move || {
+                let saved = discard && git::backup_changes(&p, "descartar líneas")?;
+                git::apply_patch(&p, &patch, cached, reverse).map(|_| saved)
+            },
+            |app, saved| app.backup_note(saved),
+        );
     }
 
     // ---------------------------------------------------------------- commit
@@ -812,6 +850,27 @@ impl App {
         }
         let Some(t) = self.tab() else { return };
         let published = t.refs.as_ref().is_some_and(|r| r.local.iter().any(|b| b.current && b.upstream.is_some() && b.ahead == 0 && !b.gone));
+        let subs = t.status.as_ref().map(|s| s.staged_submodules.clone()).unwrap_or_default();
+        if !subs.is_empty() && !t.submodules_confirmed {
+            self.confirm(
+                "Commit con submódulos",
+                &format!("Vas a confirmar un cambio en {}: el repositorio pasará a apuntar al commit que tienen ahora.", subs.join(", ")),
+                Some("Si no lo has cambiado a propósito (por ejemplo, tras un checkout o un pull sin actualizar los submódulos), quítalo del área de preparación.".into()),
+                "Confirmar igualmente",
+                false,
+                |app| {
+                    if let Some(t) = app.tab_mut() {
+                        t.submodules_confirmed = true;
+                    }
+                    app.do_commit();
+                },
+            );
+            return;
+        }
+        if let Some(t) = self.tab_mut() {
+            t.submodules_confirmed = false;
+        }
+        let Some(t) = self.tab() else { return };
         if t.amend && published {
             self.confirm(
                 "Modificar un commit ya publicado",
@@ -951,10 +1010,65 @@ impl App {
         if t.refs.as_ref().and_then(|r| r.current_branch.as_ref()) == Some(&name) {
             return;
         }
-        let p = t.path.clone();
-        let n = name.clone();
-        let text = format!("Cambiando a la rama {name}…");
-        self.op_shown("Cambiar de rama", text, move || git::checkout(&p, &n), move |app, _| app.ok(format!("Ahora estás en {name}")));
+        if self.blocked_by_operation() {
+            return;
+        }
+        self.with_pending("Cambiar de rama", Some(name.clone()), move |app, pending| {
+            let Some(p) = app.path() else { return };
+            let n = name.clone();
+            let text = format!("Cambiando a la rama {name}…");
+            let pc = pending.unwrap_or_default();
+            app.op_shown("Cambiar de rama", text, move || git::switch_with(&p, pc, &n, || git::checkout(&p, &n)), move |app, r| {
+                app.switch_done(&r, pending, format!("Ahora estás en {name}"));
+            });
+        });
+    }
+
+    /// Reports the end of [`git::switch_with`]: carried changes that clashed go to «Cambios».
+    pub fn switch_done(&mut self, r: &OpResult, pending: Option<PendingChanges>, ok: String) {
+        if r.conflicts {
+            self.toast(r.output.clone(), ToastKind::Warn);
+            self.set_view(View::Changes);
+            return;
+        }
+        self.ok(match pending {
+            Some(PendingChanges::Carry) => format!("{ok}, con tus cambios"),
+            Some(PendingChanges::Stash) => format!("{ok}; tus cambios quedan en un stash"),
+            None => ok,
+        });
+    }
+
+    /// Runs `then` straight away when there are no uncommitted changes; otherwise asks first.
+    /// With `carry_to` (a destination name) the changes can be taken there or stashed; without
+    /// it they can only be stashed before continuing (`then` gets `Some(Stash)`), because the
+    /// operation could lose them.
+    pub fn with_pending(&mut self, title: &str, carry_to: Option<String>, then: impl FnOnce(&mut App, Option<PendingChanges>) + 'static) {
+        // untracked files only matter when switching: nothing else can lose them. Without a status
+        // yet, go ahead: the core still stashes what it finds before switching
+        let n = self.tab().and_then(|t| t.status.as_ref()).map_or(0, |s| {
+            if carry_to.is_some() { s.change_count() } else { s.staged.len() + s.unstaged.iter().filter(|f| !f.is_untracked()).count() }
+        });
+        if n == 0 {
+            return then(self, None);
+        }
+        self.dialogs.push(Dialog::pending(title, n, carry_to, Box::new(move |app, c| then(app, Some(c)))));
+    }
+
+    /// True (and says why) while a merge, rebase, cherry-pick or revert is stopped.
+    pub fn blocked_by_operation(&mut self) -> bool {
+        let state = self.tab().and_then(|t| t.status.as_ref()).and_then(|s| s.state);
+        if let Some(s) = state {
+            self.toast(format!("{}: termínala o abórtala antes de seguir.", s.label()), ToastKind::Warn);
+            return true;
+        }
+        false
+    }
+
+    /// Tells that a copy of the discarded changes went to the stash list.
+    pub fn backup_note(&mut self, saved: bool) {
+        if saved {
+            self.toast("Se ha guardado una copia de lo descartado en la lista de stashes.", ToastKind::Info);
+        }
     }
 
     pub fn checkout_remote_branch(&mut self, remote_name: String, branch: String) {
@@ -981,10 +1095,18 @@ impl App {
             "Hacer checkout",
             false,
             move |app| {
-                let Some(p) = app.path() else { return };
-                let h = hash.clone();
-                let text = format!("Cambiando al commit {short}…");
-                app.op_shown("Checkout", text, move || git::checkout_detached(&p, &h), move |app, _| app.ok(format!("HEAD en {short}")));
+                if app.blocked_by_operation() {
+                    return;
+                }
+                app.with_pending("Checkout de un commit", Some(short.clone()), move |app, pending| {
+                    let Some(p) = app.path() else { return };
+                    let (h, dest) = (hash.clone(), short.clone());
+                    let text = format!("Cambiando al commit {short}…");
+                    let pc = pending.unwrap_or_default();
+                    app.op_shown("Checkout", text, move || git::switch_with(&p, pc, &dest, || git::checkout_detached(&p, &h)), move |app, r| {
+                        app.switch_done(&r, pending, format!("HEAD en {short}"));
+                    });
+                });
             },
         );
     }
@@ -992,31 +1114,44 @@ impl App {
     pub fn cherry_pick(&mut self, hash: String, subject: String, is_merge: bool) {
         let label = self.tab().map(|t| t.branch_label()).unwrap_or_default();
         let short = hash[..8.min(hash.len())].to_string();
+        if self.blocked_by_operation() {
+            return;
+        }
         self.confirm("Cherry-pick", &format!("Aplicar «{subject}» ({short}) sobre {label}."), None, "Cherry-pick", false, move |app| {
-            let Some(p) = app.path() else { return };
-            let h = hash.clone();
-            app.op("Cherry-pick", move || git::cherry_pick(&p, &h, is_merge), |app, r| {
-                if !app.handle_conflicts(&r, "El cherry-pick") {
-                    app.ok("Cherry-pick completado");
-                }
+            app.with_pending("Cherry-pick", None, move |app, pending| {
+                let Some(p) = app.path() else { return };
+                let h = hash.clone();
+                app.op("Cherry-pick", move || stash_first(&p, pending, "cherry-pick").and_then(|_| git::cherry_pick(&p, &h, is_merge)), move |app, r| {
+                    if !app.handle_conflicts(&r, "El cherry-pick") {
+                        app.ok(stashed_note("Cherry-pick completado", pending));
+                    }
+                });
             });
         });
     }
 
     pub fn revert_commit(&mut self, hash: String, subject: String, is_merge: bool) {
         let short = hash[..8.min(hash.len())].to_string();
+        if self.blocked_by_operation() {
+            return;
+        }
         self.confirm("Revertir commit", &format!("Se creará un nuevo commit que deshace «{subject}» ({short})."), None, "Revertir", false, move |app| {
-            let Some(p) = app.path() else { return };
-            let h = hash.clone();
-            app.op("Revertir", move || git::revert(&p, &h, is_merge), |app, r| {
-                if !app.handle_conflicts(&r, "El revert") {
-                    app.ok("Commit revertido");
-                }
+            app.with_pending("Revertir", None, move |app, pending| {
+                let Some(p) = app.path() else { return };
+                let h = hash.clone();
+                app.op("Revertir", move || stash_first(&p, pending, "revertir").and_then(|_| git::revert(&p, &h, is_merge)), move |app, r| {
+                    if !app.handle_conflicts(&r, "El revert") {
+                        app.ok(stashed_note("Commit revertido", pending));
+                    }
+                });
             });
         });
     }
 
     pub fn rebase_onto(&mut self, target: String, label: String) {
+        if self.blocked_by_operation() {
+            return;
+        }
         let cur = self.tab().map(|t| t.branch_label()).unwrap_or_default();
         self.confirm(
             "Rebase",
@@ -1038,7 +1173,10 @@ impl App {
 
     pub fn do_reset(&mut self, hash: String, mode: ResetMode) {
         let Some(p) = self.path() else { return };
-        self.op("Reset", move || git::reset(&p, &hash, mode), move |app, _| app.ok(format!("Reset ({}) completado", mode.flag().trim_start_matches('-'))));
+        self.op("Reset", move || git::reset(&p, &hash, mode), move |app, saved| {
+            app.ok(format!("Reset ({}) completado", mode.flag().trim_start_matches('-')));
+            app.backup_note(saved);
+        });
     }
 
     pub fn apply_stash(&mut self, reference: String, pop: bool) {
@@ -1153,10 +1291,27 @@ pub fn find_remote_ref(path: &Path) -> Option<RemoteRef> {
 }
 
 /// Adds a hint to common authentication failures.
+/// Saves the uncommitted changes in a stash before an operation that could lose them, when
+/// the user chose to (`pending` is only `Some` if there were changes).
+pub fn stash_first(repo: &Path, pending: Option<PendingChanges>, what: &str) -> anyhow::Result<()> {
+    if pending.is_some() {
+        git::stash_save(repo, &format!("Antes de {what}"), true, false)?;
+    }
+    Ok(())
+}
+
+pub fn stashed_note(ok: &str, pending: Option<PendingChanges>) -> String {
+    if pending.is_some() { format!("{ok}; tus cambios quedan en un stash") } else { ok.to_string() }
+}
+
 pub fn friendly_error(msg: &str) -> String {
     let l = msg.to_lowercase();
     if l.contains("authentication failed") || l.contains("could not read username") || l.contains("terminal prompts disabled") || l.contains("403") && l.contains("denied") {
         format!("{msg}\n\nParece un problema de credenciales: inicia sesión desde «Cuentas» (arriba a la derecha).")
+    } else if l.contains(".lock': file exists") {
+        format!("{msg}\n\nOtro proceso de Git está trabajando en este repositorio, o uno anterior se cerró sin terminar y dejó su archivo de bloqueo.")
+    } else if l.contains("force-if-includes") || l.contains("stale info") || l.contains("remote ref updated since checkout") {
+        format!("{msg}\n\nEl remoto tiene commits que no has integrado (quizá llegaron con un fetch automático). Haz pull o revísalos antes de forzar el push.")
     } else if l.contains("permission denied (publickey)") || l.contains("host key verification failed") {
         format!("{msg}\n\nLa conexión SSH ha fallado: comprueba que tu clave SSH está cargada (ssh-agent) y añadida en el servidor, o usa la URL HTTPS e inicia sesión desde «Cuentas».")
     } else {

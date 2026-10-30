@@ -64,6 +64,10 @@ pub struct Status {
     pub conflicted: Vec<FileChange>,
     pub state: Option<RepoState>,
     pub merge_msg: String,
+    /// Submodules checked out at a commit other than the one recorded (after a checkout or pull).
+    pub stale_submodules: Vec<String>,
+    /// Submodules whose recorded commit is staged: committing changes what the repository points to.
+    pub staged_submodules: Vec<String>,
 }
 
 impl Status {

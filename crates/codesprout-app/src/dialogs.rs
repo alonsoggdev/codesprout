@@ -8,6 +8,7 @@ use codesprout_core::flow::{self, FinishOptions, FlowConfig, FlowKind, PendingCh
 use codesprout_core::hosting::{self, HostedRepo, RemoteRef};
 use codesprout_core::rebase::{self, TodoAction, TodoEntry};
 use codesprout_core::repo::{self as git, PushArgs};
+use codesprout_core::history::{self, Undo, UndoKind};
 use codesprout_core::{extras, Commit, ResetMode};
 use eframe::egui::{self, Align, Key, Layout, RichText};
 
@@ -18,6 +19,7 @@ use crate::theme;
 use crate::widgets::{self, field_label, text_field};
 
 type Action = Box<dyn FnOnce(&mut App)>;
+type PendingAction = Box<dyn FnOnce(&mut App, PendingChanges)>;
 
 pub struct SettingsState {
     theme: ThemePref,
@@ -26,6 +28,7 @@ pub struct SettingsState {
     word_diff: bool,
     sign_commits: bool,
     check_updates: bool,
+    rerere: bool,
     name: String,
     email: String,
     global: bool,
@@ -34,6 +37,7 @@ pub struct SettingsState {
     actions: Vec<CustomAction>,
     repo: Option<PathBuf>,
     original: (String, String, String, String),
+    original_rerere: bool,
 }
 
 pub struct RebaseRow {
@@ -82,6 +86,9 @@ pub enum Dialog {
     Error { title: String, msg: String },
     IdentityNeeded { msg: String, name: String, email: String, global: bool, error: Option<String> },
     Confirm { title: String, msg: String, detail: Option<String>, label: String, danger: bool, action: Option<Action> },
+    /// Uncommitted changes before an operation (see [`App::with_pending`]). With `carry_to` they
+    /// can be taken there or stashed; without it they can only be stashed first.
+    Pending { title: String, count: usize, carry_to: Option<String>, choice: PendingChanges, action: Option<PendingAction> },
     Output { title: String, text: String },
     Stash { msg: String, untracked: bool, keep_index: bool },
     Settings(Box<SettingsState>),
@@ -104,8 +111,8 @@ pub enum Dialog {
     InteractiveRebase { base: Option<String>, base_label: String, rows: Option<Vec<RebaseRow>>, has_merges: bool, error: Option<String> },
     FlowInit { cfg: FlowConfig, branches: Vec<String>, error: Option<String> },
     /// `current` is the feature/release/hotfix checked out (without prefix): then only finishing it is offered.
-    /// `changes` counts the uncommitted files; if any, `pending` says where they go when starting.
-    Flow { cfg: FlowConfig, kind: FlowKind, current: Option<String>, name: String, keep: bool, tag_msg: String, changes: usize, pending: PendingChanges, error: Option<String> },
+    /// If there are uncommitted changes, `pending` says where they go when starting.
+    Flow { cfg: FlowConfig, kind: FlowKind, current: Option<String>, name: String, keep: bool, tag_msg: String, pending: PendingChanges, error: Option<String> },
     CreatePr { remote: Option<RemoteRef>, title: String, body: String, source: String, target: String, locals: Vec<String>, targets: Vec<String>, draft: bool, error: Option<String> },
     LfsTrack { pattern: String, error: Option<String> },
     SubmoduleAdd { url: String, path: String, error: Option<String> },
@@ -137,19 +144,23 @@ impl Dialog {
     pub fn accounts() -> Self {
         Dialog::Accounts { host: "github.com".into(), provider: Provider::GitHub, pending: None, error: None, gcm: None }
     }
+    pub fn pending(title: &str, count: usize, carry_to: Option<String>, action: PendingAction) -> Self {
+        Dialog::Pending { title: title.into(), count, carry_to, choice: PendingChanges::Carry, action: Some(action) }
+    }
     pub fn checkout_remote(remote_ref: String, name: String, exists: bool) -> Self {
         Dialog::CheckoutRemote { remote_ref, name, exists, error: None }
     }
     pub fn settings(app: &App) -> Self {
         let s = &app.store.settings;
         let repo = app.active_path();
-        let (name, email, global, diff_tool, merge_tool) = match &repo {
+        let (name, email, global, diff_tool, merge_tool, rerere) = match &repo {
             Some(p) => {
                 let id = git::identity(p);
                 let global = !id.name.is_empty() && id.name == id.global_name;
-                (id.name, id.email, global, git::config_value(p, "diff.tool"), git::config_value(p, "merge.tool"))
+                let rerere = git::config_value(p, "rerere.enabled") == "true";
+                (id.name, id.email, global, git::config_value(p, "diff.tool"), git::config_value(p, "merge.tool"), rerere)
             }
-            None => (String::new(), String::new(), true, String::new(), String::new()),
+            None => (String::new(), String::new(), true, String::new(), String::new(), false),
         };
         Dialog::Settings(Box::new(SettingsState {
             theme: s.theme,
@@ -158,6 +169,8 @@ impl Dialog {
             word_diff: s.word_diff,
             sign_commits: s.sign_commits,
             check_updates: s.check_updates,
+            rerere,
+            original_rerere: rerere,
             original: (name.clone(), email.clone(), diff_tool.clone(), merge_tool.clone()),
             name,
             email,
@@ -313,6 +326,33 @@ impl App {
                     return Out::Close;
                 }
             }
+            Dialog::Pending { title, count, carry_to, choice, action } => {
+                ui.heading(title.as_str());
+                let n = widgets::plural(*count, "archivo con cambios sin confirmar", "archivos con cambios sin confirmar");
+                match carry_to {
+                    Some(dest) => {
+                        ui.label(format!("Tienes {n}. ¿Qué hago con ellos?"));
+                        ui.radio_value(choice, PendingChanges::Carry, format!("Llevarlos a {dest}"));
+                        ui.radio_value(choice, PendingChanges::Stash, "Guardarlos en un stash");
+                    }
+                    None => {
+                        ui.label(format!("Tienes {n}. Si la operación se complica (conflictos, abortarla…) podrías perderlos."));
+                        ui.label(widgets::small("Se guardarán antes en un stash y podrás recuperarlos desde la lista de stashes."));
+                    }
+                }
+                let label = if carry_to.is_some() { "Continuar" } else { "Guardar en stash y continuar" };
+                let (cancel, ok) = buttons(ui, label, false, !busy);
+                if cancel {
+                    return Out::Close;
+                }
+                if ok {
+                    let c = if carry_to.is_some() { *choice } else { PendingChanges::Stash };
+                    if let Some(a) = action.take() {
+                        a(self, c);
+                    }
+                    return Out::Close;
+                }
+            }
             Dialog::Stash { msg, untracked, keep_index } => {
                 ui.heading("Guardar cambios en stash");
                 ui.label("Guarda temporalmente tus cambios y deja el directorio de trabajo limpio.");
@@ -344,9 +384,19 @@ impl App {
                     return Out::Close;
                 }
                 if ok {
-                    let (Some(p), r, n) = (path, remote_ref.clone(), git::branch_name(name)) else { return Out::Close };
-                    let text = format!("Creando la rama {n} y cambiando a ella…");
-                    self.op_shown("Checkout", text, move || git::checkout_remote(&p, &r, &n), |app, _| app.ok("Rama creada"));
+                    let (r, n) = (remote_ref.clone(), git::branch_name(name));
+                    if self.blocked_by_operation() {
+                        return Out::Close;
+                    }
+                    self.with_pending("Crear rama local", Some(n.clone()), move |app, pending| {
+                        let Some(p) = app.active_path() else { return };
+                        let text = format!("Creando la rama {n} y cambiando a ella…");
+                        let pc = pending.unwrap_or_default();
+                        let dest = n.clone();
+                        app.op_shown("Checkout", text, move || git::switch_with(&p, pc, &dest, || git::checkout_remote(&p, &r, &dest)), move |app, res| {
+                            app.switch_done(&res, pending, format!("Rama {n} creada"));
+                        });
+                    });
                     return Out::Close;
                 }
             }
@@ -371,7 +421,25 @@ impl App {
                     } else if let Some(p) = path {
                         let (s, co) = (start.clone(), *checkout);
                         let label = n.clone();
-                        self.op("Crear rama", move || git::create_branch(&p, &n, s.as_deref(), co), move |app, _| app.ok(format!("Rama {label} creada")));
+                        if !co {
+                            self.op("Crear rama", move || git::create_branch(&p, &n, s.as_deref(), false), move |app, _| app.ok(format!("Rama {label} creada")));
+                            return Out::Close;
+                        }
+                        if self.blocked_by_operation() {
+                            return Out::Close;
+                        }
+                        // from the current commit the changes simply stay; from elsewhere, ask
+                        let ask = if s.is_some() { Some(n.clone()) } else { None };
+                        let run = move |app: &mut App, pending: Option<PendingChanges>| {
+                            let pc = pending.unwrap_or_default();
+                            app.op("Crear rama", move || git::switch_with(&p, pc, &n, || git::create_branch(&p, &n, s.as_deref(), true)), move |app, r| {
+                                app.switch_done(&r, pending, format!("Rama {label} creada"));
+                            });
+                        };
+                        match ask {
+                            Some(dest) => self.with_pending("Nueva rama", Some(dest), run),
+                            None => run(self, None),
+                        }
                         return Out::Close;
                     }
                 }
@@ -400,6 +468,9 @@ impl App {
                 ui.heading("Eliminar rama");
                 ui.label(format!("¿Eliminar la rama local {name}?"));
                 check(ui, force, "Forzar aunque tenga commits sin fusionar");
+                if *force {
+                    ui.label(widgets::small("Sus commits que no estén en otra rama dejarán de verse. Al terminar te diré su hash para recuperarlos si hace falta."));
+                }
                 if let Some((_, _, label)) = upstream {
                     check(ui, remote_too, &format!("Eliminar también {label} en el remoto"));
                 }
@@ -412,8 +483,17 @@ impl App {
                     let (n, f) = (name.clone(), *force);
                     let remote = if *remote_too { upstream.clone() } else { None };
                     let label = n.clone();
-                    self.op("Eliminar rama", move || git::delete_branch(&p, &n, f), move |app, _| {
-                        app.ok(format!("Rama {label} eliminada"));
+                    self.op("Eliminar rama", move || git::delete_branch(&p, &n, f), move |app, d| {
+                        if d.unmerged > 0 {
+                            let short = &d.hash[..8.min(d.hash.len())];
+                            let msg = format!(
+                                "Rama {label} eliminada. Tenía {} sin fusionar en ninguna otra rama: puedes recuperarla creando una rama en {short}.",
+                                crate::widgets::plural(d.unmerged, "commit", "commits")
+                            );
+                            app.dialogs.push(Dialog::output("Rama eliminada", &format!("{msg}\n\nHash completo: {}", d.hash)));
+                        } else {
+                            app.ok(format!("Rama {label} eliminada"));
+                        }
                         if let Some((r, b, _)) = remote {
                             app.delete_remote_branch(r, b);
                         }
@@ -435,6 +515,9 @@ impl App {
                     }
                 }
                 check(ui, no_ff, "Crear siempre un commit de fusión (--no-ff)");
+                if self.tab().is_some_and(|t| t.change_count() > 0) {
+                    ui.label(widgets::small("Tus cambios sin confirmar se apartan durante la fusión y vuelven al terminar (o al abortarla)."));
+                }
                 let (cancel, ok) = buttons(ui, "Fusionar", false, !busy && !target.is_empty());
                 if cancel {
                     return Out::Close;
@@ -456,7 +539,7 @@ impl App {
                 for (m, t, desc) in [
                     (ResetMode::Soft, "Soft", "Mueve la rama; los cambios quedan preparados."),
                     (ResetMode::Mixed, "Mixed (recomendado)", "Mueve la rama; los cambios quedan en el directorio de trabajo sin preparar."),
-                    (ResetMode::Hard, "Hard", "Mueve la rama y DESCARTA todos los cambios. No se puede deshacer."),
+                    (ResetMode::Hard, "Hard", "Mueve la rama y DESCARTA todos los cambios. Antes se guarda una copia en la lista de stashes."),
                 ] {
                     ui.radio_value(mode, m, RichText::new(t).strong());
                     ui.label(widgets::small(format!("      {desc}")));
@@ -536,14 +619,17 @@ impl App {
                 if *untracked > 0 {
                     check(ui, with_untracked, &format!("Eliminar también {}", widgets::plural(*untracked, "archivo sin seguimiento", "archivos sin seguimiento")));
                 }
-                ui.label(widgets::small("Esta acción no se puede deshacer. Si dudas, usa Stash."));
+                ui.label(widgets::small("Antes se guarda una copia en la lista de stashes, y los archivos sin seguimiento van a la papelera."));
                 let (cancel, ok) = buttons(ui, "Descartar todo", true, !busy);
                 if cancel {
                     return Out::Close;
                 }
                 if ok {
                     let (Some(p), u) = (path, *with_untracked) else { return Out::Close };
-                    self.op("Descartar todo", move || git::discard_all(&p, u), |app, _| app.ok("Cambios descartados"));
+                    self.op("Descartar todo", move || git::discard_all(&p, u), |app, saved| {
+                        app.ok("Cambios descartados");
+                        app.backup_note(saved);
+                    });
                     return Out::Close;
                 }
             }
@@ -1033,7 +1119,9 @@ impl App {
                     return Out::Close;
                 }
             }
-            Dialog::Flow { cfg, kind, current, name, keep, tag_msg, changes, pending, error } => {
+            Dialog::Flow { cfg, kind, current, name, keep, tag_msg, pending, error } => {
+                // read live: the files can change while the dialog is open
+                let changes = self.tab().map_or(0, |t| t.change_count());
                 ui.heading("git-flow");
                 let mut start = false;
                 let mut finish = None;
@@ -1075,9 +1163,9 @@ impl App {
                             }
                             start = widgets::primary_button(ui, "Empezar", !busy && !git::branch_name(name).is_empty()).clicked();
                         });
-                        if *changes > 0 {
+                        if changes > 0 {
                             ui.add_space(4.0);
-                            let n = if *changes == 1 { "1 archivo con cambios sin confirmar".to_string() } else { format!("{changes} archivos con cambios sin confirmar") };
+                            let n = widgets::plural(changes, "archivo con cambios sin confirmar", "archivos con cambios sin confirmar");
                             ui.label(RichText::new(format!("Tienes {n}. ¿Qué hago con ellos?")).strong());
                             ui.radio_value(pending, PendingChanges::Carry, "Llevarlos a la nueva rama");
                             ui.radio_value(pending, PendingChanges::Stash, "Guardarlos en un stash y empezar limpia");
@@ -1088,8 +1176,11 @@ impl App {
                 ui.add_space(6.0);
                 let close = widgets::right_row(ui, |ui| ui.button("Cerrar").clicked()).inner;
                 if start {
+                    if self.blocked_by_operation() {
+                        return Out::Close;
+                    }
                     let (Some(p), k, n) = (path.clone(), *kind, git::branch_name(name)) else { return Out::Close };
-                    let pc = if *changes > 0 { Some(*pending) } else { None };
+                    let pc = if changes > 0 { Some(*pending) } else { None };
                     self.op("git-flow: empezar", move || flow::start(&p, k, &n, pc.unwrap_or_default()), move |app, r| {
                         if r.conflicts {
                             app.toast(r.output.clone(), ToastKind::Warn);
@@ -1106,15 +1197,22 @@ impl App {
                     return Out::Close;
                 }
                 if let Some(n) = finish {
-                    let Some(p) = path else { return Out::Close };
+                    if self.blocked_by_operation() {
+                        return Out::Close;
+                    }
                     let (k, o) = (*kind, FinishOptions { keep_branch: *keep, tag_message: tag_msg.clone(), no_tag: false });
-                    self.op("git-flow: finalizar", move || flow::finish(&p, k, &n, &o), |app, r| {
-                        if r.conflicts {
-                            app.toast(r.output.clone(), ToastKind::Warn);
-                            app.set_view(crate::repo_state::View::Changes);
-                        } else {
-                            app.ok(r.output.lines().last().unwrap_or("Finalizado").to_string());
-                        }
+                    self.with_pending("Finalizar", None, move |app, pending| {
+                        let Some(p) = app.active_path() else { return };
+                        let work = move || crate::actions::stash_first(&p, pending, "finalizar").and_then(|_| flow::finish(&p, k, &n, &o));
+                        app.op("git-flow: finalizar", work, move |app, r| {
+                            if r.conflicts {
+                                app.toast(r.output.clone(), ToastKind::Warn);
+                                app.set_view(crate::repo_state::View::Changes);
+                            } else {
+                                let last = r.output.lines().last().unwrap_or("Finalizado");
+                                app.ok(crate::actions::stashed_note(last, pending));
+                            }
+                        });
                     });
                     return Out::Close;
                 }
@@ -1397,6 +1495,8 @@ impl App {
 
     fn settings_body(&mut self, ui: &mut egui::Ui, s: &mut SettingsState) -> Out {
         ui.heading("Ajustes");
+        // Some(true): check integrity, Some(false): optimize
+        let mut maintenance: Option<bool> = None;
         egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
             ui.columns(2, |cols| {
                 field_label(&mut cols[0], "Tema");
@@ -1440,6 +1540,18 @@ impl App {
                     text_field(&mut cols[1], &mut s.merge_tool, "vscode, bc, meld, kdiff3…");
                 });
                 ui.label(widgets::small("Usa los nombres que entiende git (git difftool --tool-help). Para VS Code: «vscode», configurado con difftool.vscode.cmd."));
+                ui.separator();
+                ui.label(RichText::new("Git").strong());
+                check(ui, &mut s.rerere, "Recordar cómo resuelvo los conflictos y reutilizarlo (rerere, global)");
+                ui.label(widgets::small("Si vuelve a aparecer un conflicto que ya resolviste (por ejemplo, al repetir un rebase), Git aplica tu resolución. Revisa el archivo y márcalo como resuelto."));
+                ui.horizontal(|ui| {
+                    if ui.button("Comprobar integridad").on_hover_text("Verifica cada objeto con su hash y que no falte ninguno (git fsck)").clicked() {
+                        maintenance = Some(true);
+                    }
+                    if ui.button("Optimizar").on_hover_text("Empaqueta los objetos y limpia lo que ya no hace falta (git maintenance)").clicked() {
+                        maintenance = Some(false);
+                    }
+                });
             }
             ui.separator();
             ui.label(RichText::new("Acciones personalizadas").strong());
@@ -1473,6 +1585,9 @@ impl App {
                 s.actions.push(CustomAction { name: "Nueva acción".into(), ..Default::default() });
             }
         });
+        if let (Some(check), Some(p)) = (maintenance, s.repo.clone()) {
+            self.run_maintenance(p, check);
+        }
         let mut error = None;
         let (cancel, ok) = buttons(ui, "Guardar", false, true);
         if cancel {
@@ -1497,6 +1612,9 @@ impl App {
                         }
                         if s.merge_tool.trim() != s.original.3 {
                             git::set_config(p, "merge.tool", &s.merge_tool, true)?;
+                        }
+                        if s.rerere != s.original_rerere {
+                            git::set_config(p, "rerere.enabled", if s.rerere { "true" } else { "false" }, true)?;
                         }
                         Ok(())
                     })();
@@ -1562,6 +1680,9 @@ impl App {
     }
 
     pub fn open_merge(&mut self) {
+        if self.blocked_by_operation() {
+            return;
+        }
         let Some(r) = self.tab().and_then(|t| t.refs.clone()) else { return };
         let cur = r.current_branch.clone();
         let options: Vec<String> = r
@@ -1579,6 +1700,9 @@ impl App {
     }
 
     pub fn open_merge_into(&mut self, reference: String, label: String) {
+        if self.blocked_by_operation() {
+            return;
+        }
         self.dialogs.push(Dialog::Merge { options: vec![], target: reference, fixed: Some(label), no_ff: false });
     }
 
@@ -1606,6 +1730,9 @@ impl App {
     }
 
     pub fn open_pull(&mut self) {
+        if self.blocked_by_operation() {
+            return;
+        }
         let Some(r) = self.tab().and_then(|t| t.refs.clone()) else { return };
         if r.remotes.is_empty() {
             return self.toast("Este repositorio no tiene remotos.", ToastKind::Warn);
@@ -1673,6 +1800,9 @@ impl App {
     pub fn open_interactive_rebase(&mut self, base: Option<String>) {
         let Some(t) = self.tab() else { return };
         let Some(p) = self.active_path() else { return };
+        if let Some(s) = t.status.as_ref().and_then(|s| s.state) {
+            return self.toast(format!("{}: termínala o abórtala antes de seguir.", s.label()), ToastKind::Warn);
+        }
         if t.change_count() > 0 {
             return self.toast("Confirma o guarda en stash tus cambios antes de un rebase interactivo.", ToastKind::Warn);
         }
@@ -1706,8 +1836,7 @@ impl App {
             Some(cfg) => {
                 let on = r.current_branch.as_deref().and_then(|b| FlowKind::ALL.into_iter().find_map(|k| b.strip_prefix(cfg.prefix(k)).filter(|n| !n.is_empty()).map(|n| (k, n.to_string()))));
                 let (kind, current) = on.map_or((FlowKind::Feature, None), |(k, n)| (k, Some(n)));
-                let changes = t.status.as_ref().map_or(0, |s| s.change_count());
-                self.dialogs.push(Dialog::Flow { cfg, kind, current, name: String::new(), keep: false, tag_msg: String::new(), changes, pending: PendingChanges::Carry, error: None })
+                self.dialogs.push(Dialog::Flow { cfg, kind, current, name: String::new(), keep: false, tag_msg: String::new(), pending: PendingChanges::Carry, error: None })
             }
             None => {
                 let branches: Vec<String> = r.local.iter().map(|b| b.name.clone()).collect();
@@ -1726,6 +1855,62 @@ impl App {
                 self.open_flow();
             }
         }
+    }
+
+    /// `git fsck` (`check`) or `git maintenance`, with progress and cancel.
+    pub fn run_maintenance(&mut self, repo: PathBuf, check: bool) {
+        if check {
+            self.remote_op("Comprobar integridad", move |h| extras::check_integrity(&repo, Some(h)), |app, problems: Vec<String>| {
+                if problems.is_empty() {
+                    app.ok("El repositorio está en buen estado");
+                } else {
+                    let text = format!("git fsck ha encontrado problemas:\n\n{}", problems.join("\n"));
+                    app.dialogs.push(Dialog::output("Comprobar integridad", &text));
+                }
+            });
+        } else {
+            self.remote_op("Optimizar", move |h| extras::optimize(&repo, Some(h)), |app, _| app.ok("Repositorio optimizado"));
+        }
+    }
+
+    /// Asks before undoing the last operation read from the reflog.
+    pub fn open_undo(&mut self) {
+        let Some(u) = self.tab().and_then(|t| t.undo.clone()) else { return };
+        if self.blocked_by_operation() {
+            return;
+        }
+        match u.kind.clone() {
+            UndoKind::Checkout { previous } => {
+                let label = if previous.len() == 40 { previous[..8].to_string() } else { previous.clone() };
+                let msg = format!("Volverás a {label}, donde estabas antes («{}»).", u.action);
+                self.confirm("Deshacer", &msg, None, "Deshacer", false, move |app| {
+                    app.with_pending("Deshacer", Some(label.clone()), move |app, pending| app.run_undo(u, pending, label));
+                });
+            }
+            UndoKind::Move { branch, target, soft } => {
+                let after = if soft { "Sus cambios volverán al área de preparación." } else { "Tus cambios sin confirmar se conservan." };
+                let msg = format!("Se deshará «{}»: {branch} volverá a {}. {after}", u.action, &target[..8.min(target.len())]);
+                let detail = if u.published {
+                    "Esos commits ya están en el remoto: para quitarlos también de allí tendrás que hacer push forzado; si no, el próximo pull los traerá de vuelta. Puedes rehacerlo pulsando «Deshacer» otra vez."
+                } else {
+                    "Puedes rehacerlo pulsando «Deshacer» otra vez."
+                };
+                self.confirm("Deshacer", &msg, Some(detail.into()), "Deshacer", u.published, move |app| app.run_undo(u, None, branch));
+            }
+        }
+    }
+
+    /// `dest`: the branch or commit a checkout goes back to, or the branch that moves.
+    fn run_undo(&mut self, u: Undo, pending: Option<PendingChanges>, dest: String) {
+        let Some(p) = self.active_path() else { return };
+        let pc = pending.unwrap_or_default();
+        let checkout = matches!(u.kind, UndoKind::Checkout { .. });
+        let ok = if checkout { format!("Has vuelto a {dest}") } else { format!("Deshecho: {dest} ha vuelto atrás") };
+        self.op(
+            "Deshacer",
+            move || if checkout { git::switch_with(&p, pc, &dest, || history::undo(&p, &u)) } else { history::undo(&p, &u).map(|_| Default::default()) },
+            move |app, r| app.switch_done(&r, pending, ok),
+        );
     }
 
     pub fn open_create_pr(&mut self, source: Option<String>) {

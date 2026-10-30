@@ -58,6 +58,13 @@ pub struct Progress {
     pub started: Instant,
 }
 
+/// Extra facts gathered on each refresh.
+pub struct Checks {
+    undo: Option<codesprout_core::history::Undo>,
+    /// None when the LFS check was not run this time.
+    lfs_missing: Option<bool>,
+}
+
 pub struct App {
     pub store: Store,
     pub tabs: Vec<RepoTab>,
@@ -124,7 +131,10 @@ impl App {
                 app.gcm_version = gcm;
                 app.lfs_version = lfs;
                 match v {
-                    Ok(v) => app.git_version = Some(v),
+                    Ok(v) => {
+                        app.check_git_version(&v);
+                        app.git_version = Some(v);
+                    }
                     // repositories inside WSL use the distro's git, so the app is still useful
                     Err(_) if !distros.is_empty() => app.toast(
                         format!("Git no está instalado en Windows: podrás abrir los repositorios que tengas dentro de {}.", distros.join(" o ")),
@@ -139,6 +149,38 @@ impl App {
             app.activate(app.active);
         }
         app
+    }
+
+    /// Warns about a git without the fixes for known vulnerabilities. Only on Windows: there git
+    /// comes from Git for Windows, whose numbers follow upstream; Linux distributions backport
+    /// fixes without changing the version.
+    fn check_git_version(&mut self, text: &str) {
+        let Some(v) = git::parse_version(text) else { return };
+        if v < git::MIN_GIT {
+            let (a, b, c) = git::MIN_GIT;
+            self.error_dialog("Git demasiado antiguo", &format!("Tienes {}. CodeSprout necesita Git {a}.{b}.{c} o posterior: actualízalo desde https://git-scm.com.", text.trim()));
+        } else if cfg!(windows) && !git::has_security_fixes(v) {
+            self.toast(format!("Tu Git ({}) tiene vulnerabilidades conocidas al clonar repositorios. Actualízalo desde https://git-scm.com.", text.trim()), ToastKind::Warn);
+        }
+    }
+
+    /// Git refuses a folder owned by another user: offers to trust it (`safe.directory`).
+    pub fn offer_trust(&mut self, dir: PathBuf, trusted: String) {
+        let msg = format!("Git no abre «{trusted}» porque pertenece a otro usuario del sistema (es habitual en discos externos, carpetas compartidas o WSL).");
+        self.confirm(
+            "Carpeta de otro usuario",
+            &msg,
+            Some("Si confías en ella, se añadirá a safe.directory en tu configuración global de Git.".into()),
+            "Confiar y abrir",
+            false,
+            move |app| {
+                let d = dir.clone();
+                app.op("Confiar en la carpeta", move || git::trust_directory(&d, &trusted), move |app, _| {
+                    app.open_repo(dir);
+                    app.refresh(false);
+                });
+            },
+        );
     }
 
     pub fn sender(&self) -> BusSender {
@@ -225,10 +267,13 @@ impl App {
     /// Opens (or switches to) the repository containing `dir`.
     pub fn open_repo(&mut self, dir: PathBuf) {
         self.bus.spawn(
-            move || git::resolve_repo(&dir),
+            move || git::resolve_repo(&dir).map_err(|e| (dir, e)),
             |app, r| match r {
                 Ok(p) => app.open_resolved(p),
-                Err(e) => app.git_error(e),
+                Err((dir, e)) => match git::dubious_dir(&e.to_string()) {
+                    Some(trusted) => app.offer_trust(dir, trusted),
+                    None => app.git_error(e),
+                },
             },
         );
     }
@@ -375,6 +420,7 @@ impl App {
         let old_commits = t.commits.clone();
         let had_worktree = t.layout.worktree.is_some();
         let need_template = t.template.is_none();
+        let check_lfs = !t.lfs_checked;
         self.bus.spawn(
             move || -> anyhow::Result<_> {
                 let status = git::status(&path)?;
@@ -386,7 +432,11 @@ impl App {
                     if reload || wt != had_worktree { Some(Arc::new(explorer::layout(&commits, &refs, wt, mode))) } else { None };
                 let flow = codesprout_core::flow::config(&path);
                 let template = if need_template { codesprout_core::extras::commit_template(&path) } else { None };
-                Ok((status, refs, reload.then_some(commits), layout, flow, template))
+                let checks = Checks {
+                    undo: codesprout_core::history::last_undo(&path),
+                    lfs_missing: check_lfs.then(|| codesprout_core::extras::lfs_missing(&path)),
+                };
+                Ok((status, refs, reload.then_some(commits), layout, flow, template, checks))
             },
             move |app, r| app.apply_refresh(&key, r),
         );
@@ -403,15 +453,46 @@ impl App {
             Option<Arc<explorer::Layout>>,
             Option<codesprout_core::flow::FlowConfig>,
             Option<String>,
+            Checks,
         )>,
     ) {
         let Some(idx) = self.tabs.iter().position(|t| t.key == key) else { return };
         let is_active = self.active == Some(idx);
         let t = &mut self.tabs[idx];
         t.refreshing = false;
+        let mut warnings = Vec::new();
         match r {
-            Err(e) => t.error = Some(e.to_string()),
-            Ok((status, refs, commits, layout, flow, template)) => {
+            Err(e) => {
+                let msg = e.to_string();
+                // offer to trust the folder once, not on every refresh
+                if t.error.is_none() {
+                    if let Some(dir) = git::dubious_dir(&msg) {
+                        let p = t.path.clone();
+                        warnings.push(Box::new(move |app: &mut App| app.offer_trust(p, dir)) as Box<dyn FnOnce(&mut App)>);
+                    }
+                }
+                t.error = Some(msg);
+            }
+            Ok((status, refs, commits, layout, flow, template, checks)) => {
+                // submodules that just stopped matching their recorded commit (after a checkout or pull)
+                let before = t.status.as_ref().map(|s| s.stale_submodules.clone()).unwrap_or_default();
+                let new: Vec<String> = status.stale_submodules.iter().filter(|p| !before.contains(p)).cloned().collect();
+                if t.status.is_some() && !new.is_empty() {
+                    let msg = format!(
+                        "{} no {} en el commit que registra el repositorio. Actualízalos desde «Submódulos» o, si no, no confirmes ese cambio.",
+                        new.join(", "),
+                        if new.len() == 1 { "está" } else { "están" }
+                    );
+                    warnings.push(Box::new(move |app: &mut App| app.toast(msg, ToastKind::Warn)));
+                }
+                if let Some(missing) = checks.lfs_missing {
+                    t.lfs_checked = true;
+                    if missing {
+                        let msg = "Este repositorio usa Git LFS pero no está instalado: verás punteros en vez de los archivos, y si los confirmas sustituirás los reales. Instala git-lfs (https://git-lfs.com).";
+                        warnings.push(Box::new(move |app: &mut App| app.toast(msg, ToastKind::Warn)));
+                    }
+                }
+                t.undo = checks.undo;
                 let had_conflicts = t.status.as_ref().is_some_and(|s| !s.conflicted.is_empty());
                 if !had_conflicts && !status.conflicted.is_empty() {
                     let first = status.conflicted[0].path.clone();
@@ -456,6 +537,9 @@ impl App {
                 t.rebuild_ref_map();
                 t.prune_selection();
             }
+        }
+        for w in warnings {
+            w(self);
         }
         let again = std::mem::take(&mut self.tabs[idx].refresh_again);
         let full = std::mem::take(&mut self.tabs[idx].refresh_full);
@@ -766,6 +850,8 @@ impl App {
         let name = t.name();
         let flow_ready = t.flow.is_some();
         let has_hosting = t.prs.remote.is_some();
+        let undo_tip = t.undo.as_ref().map_or("No hay nada que deshacer".to_string(), |u| format!("Deshacer «{}»", u.action));
+        let can_undo = t.undo.is_some();
         let mut action: Option<&'static str> = None;
         egui::TopBottomPanel::top("toolbar")
             .exact_height(62.0)
@@ -788,6 +874,7 @@ impl App {
                     tb(ui, Icon::Merge, "Merge", None, !busy && has_head, "Fusionar otra rama en la actual", "merge");
                     tb(ui, Icon::Stash, "Stash", None, !busy && n > 0 && has_head, "Guardar los cambios temporalmente", "stash");
                     tb(ui, Icon::Discard, "Descartar", None, !busy && n > 0, "Descartar todos los cambios", "discard");
+                    tb(ui, Icon::Undo, "Deshacer", None, !busy && can_undo, &undo_tip, "undo");
                     separator(ui);
                     tb(ui, Icon::Flow, "Flow", None, !busy && has_head, if flow_ready { "git-flow: features, releases y hotfixes" } else { "Inicializar git-flow" }, "flow");
                     tb(ui, Icon::PullRequest, "Pull request", None, !busy && has_head, if has_hosting { "Crear una pull request" } else { "Crear una pull request (GitHub, GitLab, Bitbucket, Azure)" }, "pr");
@@ -819,6 +906,7 @@ impl App {
             Some("merge") => self.open_merge(),
             Some("stash") => self.dialogs.push(Dialog::stash()),
             Some("discard") => self.open_discard_all(),
+            Some("undo") => self.open_undo(),
             Some("flow") => self.open_flow(),
             Some("pr") => self.open_create_pr(None),
             Some("terminal") => {
