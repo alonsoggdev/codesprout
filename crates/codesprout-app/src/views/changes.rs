@@ -14,7 +14,7 @@ use crate::widgets;
 pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     let c = theme::p();
     let rect = ui.available_rect_before_wrap();
-    let lw = app.store.settings.changes_width.clamp(260.0, (rect.width() - 300.0).max(260.0));
+    let lw = app.store.settings.changes_width.clamp(260.0, (rect.width() - 260.0).max(260.0));
     let left = egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + lw, rect.max.y));
     let split = egui::Rect::from_min_max(egui::pos2(left.max.x, rect.min.y), egui::pos2(left.max.x + 4.0, rect.max.y));
     let right = egui::Rect::from_min_max(egui::pos2(split.max.x, rect.min.y), rect.max);
@@ -24,12 +24,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     if r.dragged() {
-        app.store.settings.changes_width = (lw + r.drag_delta().x).clamp(260.0, rect.width() - 300.0);
+        app.store.settings.changes_width = (lw + r.drag_delta().x).clamp(260.0, (rect.width() - 260.0).max(260.0));
         app.persist();
     }
+    // narrow panes (split screen): what does not fit is cut, it never spills over the neighbour
     let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(left));
+    lu.set_clip_rect(left.intersect(ui.clip_rect()));
     lists(&mut lu, app, idx, defer);
     let mut ru = ui.new_child(egui::UiBuilder::new().max_rect(right));
+    ru.set_clip_rect(right.intersect(ui.clip_rect()));
     diff_area(&mut ru, app, idx, defer);
     ui.allocate_rect(rect, Sense::hover());
     keyboard(ui, app, idx, defer);

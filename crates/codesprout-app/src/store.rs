@@ -109,6 +109,10 @@ pub struct Store {
     pub repos: Vec<RepoEntry>,
     pub tabs: Vec<String>,
     pub active: Option<String>,
+    /// Repositories shown at the same time (two or more) when the screen is split.
+    pub split: Vec<String>,
+    /// Panes stacked top to bottom instead of side by side.
+    pub split_vertical: bool,
     pub accounts: Vec<Account>,
 }
 
@@ -132,6 +136,11 @@ impl Store {
         s.tabs.retain(|t| s.repos.iter().any(|r| &r.path == t));
         if s.active.as_ref().is_some_and(|a| !s.tabs.contains(a)) {
             s.active = s.tabs.first().cloned();
+        }
+        s.split.retain(|k| s.tabs.contains(k));
+        s.split.dedup();
+        if s.split.len() < 2 || s.active.as_ref().is_none_or(|a| !s.split.contains(a)) {
+            s.split.clear();
         }
         s.settings.zoom = s.settings.zoom.clamp(0.4, 2.5);
         s

@@ -47,6 +47,8 @@ pub enum Icon {
     Eye,
     Patch,
     Undo,
+    /// Two panes side by side.
+    Split,
 }
 
 fn line(p: &Painter, a: Pos2, b: Pos2, s: Stroke) {
@@ -236,6 +238,10 @@ pub fn paint(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             poly(p, vec![at(8.0, 1.5), at(14.0, 4.5), at(14.0, 11.5), at(8.0, 14.5), at(2.0, 11.5), at(2.0, 4.5), at(8.0, 1.5)], st);
             poly(p, vec![at(2.0, 4.5), at(8.0, 7.5), at(14.0, 4.5)], st);
             line(p, at(8.0, 7.5), at(8.0, 14.5), st);
+        }
+        Icon::Split => {
+            p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), 1.5 * u, st, egui::StrokeKind::Middle);
+            line(p, at(8.0, 3.0), at(8.0, 13.0), st);
         }
         Icon::Layers => {
             poly(p, vec![at(8.0, 2.0), at(14.5, 5.5), at(8.0, 9.0), at(1.5, 5.5), at(8.0, 2.0)], st);
