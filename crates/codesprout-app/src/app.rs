@@ -1,5 +1,6 @@
 //! Application state, frame loop, tabs, toolbar, status bar, refresh and notifications.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use crate::store::{RepoEntry, Store, ThemePref};
 use crate::theme;
 use crate::widgets;
 
-/// Watches the active repository: Windows' own notifications, or the WSL agent's for repositories
+/// Watches a visible repository: Windows' own notifications, or the WSL agent's for repositories
 /// inside WSL (Windows gets none there). Dropping it stops watching.
 #[allow(dead_code)]
 enum Watcher {
@@ -80,10 +81,18 @@ pub struct App {
     pub lfs_version: Option<String>,
     /// Installed WSL distros, for "Abrir desde Ubuntu" and cloning into WSL.
     pub wsl_distros: Vec<String>,
-    watcher: Option<Watcher>,
-    watch_key: Option<String>,
-    watch_flag: Arc<AtomicBool>,
+    /// One watcher per visible repository, with its "change already reported" flag.
+    watchers: HashMap<String, (Watcher, Arc<AtomicBool>)>,
+    /// WSL watchers still starting up.
+    watch_pending: HashSet<String>,
+    /// Visible repositories (other than the active one) that changed on disk.
+    stale: HashSet<String>,
     pending_refresh: Option<Instant>,
+    /// Split screen: the repositories shown side by side (two or more; empty = a single one).
+    pub split: Vec<String>,
+    pub split_vertical: bool,
+    /// Relative size of each pane.
+    pub split_weights: Vec<f32>,
     dirty_since: Option<Instant>,
     was_focused: bool,
     applied_dark: Option<bool>,
@@ -109,10 +118,13 @@ impl App {
             gcm_version: None,
             lfs_version: None,
             wsl_distros: Vec::new(),
-            watcher: None,
-            watch_key: None,
-            watch_flag: Arc::new(AtomicBool::new(false)),
+            watchers: HashMap::new(),
+            watch_pending: HashSet::new(),
+            stale: HashSet::new(),
             pending_refresh: None,
+            split: Vec::new(),
+            split_vertical: false,
+            split_weights: Vec::new(),
             dirty_since: None,
             was_focused: true,
             applied_dark: None,
@@ -125,6 +137,9 @@ impl App {
         }
         let active = app.store.active.clone();
         app.active = active.and_then(|a| app.tabs.iter().position(|t| t.key == a));
+        app.split = app.store.split.clone();
+        app.split_vertical = app.store.split_vertical;
+        app.normalize_split();
         app.bus.spawn(
             || (git::version(), codesprout_core::credentials::gcm_version(), codesprout_core::extras::lfs_version(), wsl::distros()),
             |app, (v, gcm, lfs, distros)| {
@@ -190,16 +205,21 @@ impl App {
     // ---------------------------------------------------------------- persistence
 
     pub fn persist(&mut self) {
-        self.store.tabs = self.tabs.iter().map(|t| t.key.clone()).collect();
-        self.store.active = self.active.and_then(|i| self.tabs.get(i)).map(|t| t.key.clone());
+        self.sync_store();
         if self.dirty_since.is_none() {
             self.dirty_since = Some(Instant::now());
         }
     }
 
-    pub fn save_now(&mut self) {
+    fn sync_store(&mut self) {
         self.store.tabs = self.tabs.iter().map(|t| t.key.clone()).collect();
         self.store.active = self.active.and_then(|i| self.tabs.get(i)).map(|t| t.key.clone());
+        self.store.split = self.split.clone();
+        self.store.split_vertical = self.split_vertical;
+    }
+
+    pub fn save_now(&mut self) {
+        self.sync_store();
         self.store.save();
         self.dirty_since = None;
     }
@@ -248,12 +268,102 @@ impl App {
     }
 
     pub fn activate(&mut self, idx: Option<usize>) {
+        let prev = self.active_key();
         self.active = idx.filter(|&i| i < self.tabs.len());
+        if let (Some(key), true) = (self.active_key(), self.split.len() >= 2) {
+            // a repository that is not on screen takes the place of the focused pane's
+            if !self.split.contains(&key) {
+                let at = prev.and_then(|p| self.split.iter().position(|k| *k == p)).unwrap_or(0);
+                self.split[at] = key;
+            }
+        }
+        self.normalize_split();
         self.persist();
-        self.watch_active();
+        self.watch_visible();
         if self.active.is_some() {
             self.refresh(false);
+            // panes that have not loaded yet (after restoring a split screen)
+            for key in self.visible_keys() {
+                if let Some(i) = self.tabs.iter().position(|t| t.key == key) {
+                    if self.active != Some(i) && self.tabs[i].status.is_none() {
+                        self.refresh_tab(i, false);
+                    }
+                }
+            }
         }
+    }
+
+    // ---------------------------------------------------------------- split screen
+
+    pub const MAX_PANES: usize = 4;
+
+    /// Repositories on screen: every pane when the screen is split, else the active one.
+    pub fn visible_keys(&self) -> Vec<String> {
+        if self.active.is_some() && self.split.len() >= 2 {
+            self.split.clone()
+        } else {
+            self.active_key().into_iter().collect()
+        }
+    }
+
+    /// Keeps the split consistent with the open tabs: no closed or repeated repositories, at least
+    /// two panes (otherwise there is no split) and the active repository among them.
+    pub fn normalize_split(&mut self) {
+        let mut seen = HashSet::new();
+        let tabs: HashSet<&String> = self.tabs.iter().map(|t| &t.key).collect();
+        self.split.retain(|k| tabs.contains(k) && seen.insert(k.clone()));
+        self.split.truncate(Self::MAX_PANES);
+        if self.split.len() < 2 {
+            self.split.clear();
+        } else if let Some(key) = self.active_key() {
+            if !self.split.contains(&key) {
+                self.split[0] = key;
+            }
+        }
+        if self.split_weights.len() != self.split.len() {
+            self.split_weights = vec![1.0; self.split.len()];
+        }
+    }
+
+    /// Splits the screen to show tab `idx` next to the current repository.
+    pub fn split_with(&mut self, idx: usize) {
+        let Some(key) = self.tabs.get(idx).map(|t| t.key.clone()) else { return };
+        if self.split.len() < 2 {
+            let Some(cur) = self.active_key() else { return };
+            if cur == key {
+                return;
+            }
+            self.split = vec![cur, key];
+        } else if !self.split.contains(&key) {
+            if self.split.len() >= Self::MAX_PANES {
+                return self.toast(format!("Como máximo {} repositorios a la vez.", Self::MAX_PANES), ToastKind::Info);
+            }
+            self.split.push(key);
+        }
+        self.split_weights.clear();
+        self.activate(Some(idx));
+    }
+
+    /// Takes a repository off the split screen (it stays open as a tab).
+    pub fn unsplit(&mut self, key: &str) {
+        self.split.retain(|k| k != key);
+        if self.active_key().as_deref() == Some(key) {
+            let next = self.split.first().and_then(|k| self.tabs.iter().position(|t| &t.key == k));
+            if let Some(i) = next {
+                self.active = Some(i);
+            }
+        }
+        self.split_weights.clear();
+        self.normalize_split();
+        self.persist();
+        self.watch_visible();
+    }
+
+    pub fn close_split(&mut self) {
+        self.split.clear();
+        self.split_weights.clear();
+        self.persist();
+        self.watch_visible();
     }
 
     pub fn add_repo_entry(&mut self, path: &Path) {
@@ -313,7 +423,10 @@ impl App {
         if idx >= self.tabs.len() {
             return;
         }
-        self.tabs.remove(idx);
+        let closed = self.tabs.remove(idx).key;
+        let was_split = self.split.contains(&closed);
+        self.split.retain(|k| *k != closed);
+        self.split_weights.clear();
         let next = match self.active {
             Some(a) if a == idx => {
                 if self.tabs.is_empty() {
@@ -324,6 +437,12 @@ impl App {
             }
             Some(a) if a > idx => Some(a - 1),
             other => other,
+        };
+        // closing a pane's repository leaves the focus on one of the panes that remain
+        let next = if was_split && self.active == Some(idx) {
+            self.split.first().and_then(|k| self.tabs.iter().position(|t| &t.key == k)).or(next)
+        } else {
+            next
         };
         self.activate(next);
     }
@@ -338,54 +457,66 @@ impl App {
 
     // ---------------------------------------------------------------- file watcher
 
-    fn watch_active(&mut self) {
-        let key = self.active_key();
-        if key == self.watch_key {
-            return;
-        }
-        self.watcher = None;
-        self.watch_key = key.clone();
-        let Some(key) = key else { return };
-        let sender = self.sender();
-        let flag = self.watch_flag.clone();
-        let k = key.clone();
-        let changed = move || {
-            if !flag.swap(true, Ordering::SeqCst) {
-                let k = k.clone();
-                sender.send(move |app| app.on_fs_change(&k));
+    /// Watches every repository on screen and stops watching the rest.
+    fn watch_visible(&mut self) {
+        let visible = self.visible_keys();
+        self.watchers.retain(|k, _| visible.contains(k));
+        self.watch_pending.retain(|k| visible.contains(k));
+        for key in visible {
+            if self.watchers.contains_key(&key) || self.watch_pending.contains(&key) {
+                continue;
             }
-        };
-        if wsl::locate(Path::new(&key)).is_some() {
-            // may have to start the distro: off the UI thread
-            let path = PathBuf::from(&key);
-            self.bus.spawn(
-                move || wsl::watch(&path, changed),
-                move |app, r| {
-                    if let (Ok(Some(h)), true) = (r, app.watch_key.as_deref() == Some(key.as_str())) {
-                        app.watcher = Some(Watcher::Wsl(h));
-                    }
-                },
-            );
-            return;
-        }
-        let w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(ev) = res else { return };
-            if ev.paths.iter().any(|p| codesprout_wsl::is_relevant_change(&p.to_string_lossy())) {
-                changed();
+            let sender = self.sender();
+            let flag = Arc::new(AtomicBool::new(false));
+            let (f, k) = (flag.clone(), key.clone());
+            let changed = move || {
+                if !f.swap(true, Ordering::SeqCst) {
+                    let k = k.clone();
+                    sender.send(move |app| app.on_fs_change(&k));
+                }
+            };
+            if wsl::locate(Path::new(&key)).is_some() {
+                // may have to start the distro: off the UI thread
+                self.watch_pending.insert(key.clone());
+                let path = PathBuf::from(&key);
+                self.bus.spawn(
+                    move || wsl::watch(&path, changed),
+                    move |app, r| {
+                        if !app.watch_pending.remove(&key) {
+                            return;
+                        }
+                        if let Ok(Some(h)) = r {
+                            app.watchers.insert(key, (Watcher::Wsl(h), flag));
+                        }
+                    },
+                );
+                continue;
             }
-        });
-        if let Ok(mut w) = w {
-            use notify::Watcher as _;
-            if w.watch(Path::new(&key), notify::RecursiveMode::Recursive).is_ok() {
-                self.watcher = Some(Watcher::Native(w));
+            let w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                let Ok(ev) = res else { return };
+                if ev.paths.iter().any(|p| codesprout_wsl::is_relevant_change(&p.to_string_lossy())) {
+                    changed();
+                }
+            });
+            if let Ok(mut w) = w {
+                use notify::Watcher as _;
+                if w.watch(Path::new(&key), notify::RecursiveMode::Recursive).is_ok() {
+                    self.watchers.insert(key, (Watcher::Native(w), flag));
+                }
             }
         }
     }
 
     fn on_fs_change(&mut self, key: &str) {
-        self.watch_flag.store(false, Ordering::SeqCst);
-        if self.active_key().as_deref() == Some(key) {
+        if let Some((_, flag)) = self.watchers.get(key) {
+            flag.store(false, Ordering::SeqCst);
+        }
+        let active = self.active_key();
+        if active.as_deref() == Some(key) {
             self.pending_refresh = Some(Instant::now() + Duration::from_millis(350));
+        } else if self.visible_keys().iter().any(|k| k == key) {
+            self.stale.insert(key.to_string());
+            self.pending_refresh.get_or_insert(Instant::now() + Duration::from_millis(350));
         }
     }
 
@@ -398,6 +529,15 @@ impl App {
     pub fn refresh(&mut self, full: bool) {
         if let Some(i) = self.active {
             self.refresh_tab(i, full);
+        }
+    }
+
+    /// Refreshes every repository on screen (all the panes when the screen is split).
+    pub fn refresh_visible(&mut self, full: bool) {
+        for key in self.visible_keys() {
+            if let Some(i) = self.tabs.iter().position(|t| t.key == key) {
+                self.refresh_tab(i, full);
+            }
         }
     }
 
@@ -457,7 +597,7 @@ impl App {
         )>,
     ) {
         let Some(idx) = self.tabs.iter().position(|t| t.key == key) else { return };
-        let is_active = self.active == Some(idx);
+        let on_screen = self.visible_keys().iter().any(|k| k == key);
         let t = &mut self.tabs[idx];
         t.refreshing = false;
         let mut warnings = Vec::new();
@@ -543,8 +683,11 @@ impl App {
         }
         let again = std::mem::take(&mut self.tabs[idx].refresh_again);
         let full = std::mem::take(&mut self.tabs[idx].refresh_full);
-        if is_active {
+        if on_screen {
+            // the pane's repository may not be the active one: act on it for a moment
+            let prev = self.active.replace(idx);
             self.after_refresh();
+            self.active = prev;
         }
         if again {
             self.refresh_tab(idx, full);
@@ -609,7 +752,7 @@ impl App {
             )
         });
         if f5 {
-            self.refresh(true);
+            self.refresh_visible(true);
         }
         if t {
             self.activate(None);
@@ -625,7 +768,14 @@ impl App {
         if two {
             self.set_view(View::History);
         }
-        if tab && self.tabs.len() > 1 {
+        if tab && self.active.is_some() && self.split.len() >= 2 {
+            // with a split screen the shortcut moves the focus between panes
+            let n = self.split.len();
+            let i = self.active_key().and_then(|k| self.split.iter().position(|p| *p == k)).unwrap_or(0);
+            let key = self.split[if shift { (i + n - 1) % n } else { (i + 1) % n }].clone();
+            let at = self.tabs.iter().position(|t| t.key == key);
+            self.activate(at);
+        } else if tab && self.tabs.len() > 1 {
             let n = self.tabs.len();
             let i = self.active.unwrap_or(0);
             self.activate(Some(if shift { (i + n - 1) % n } else { (i + 1) % n }));
@@ -672,6 +822,7 @@ impl App {
         // window focus -> refresh (catches changes made in other tools)
         let focused = ctx.input(|i| i.focused);
         if focused && !self.was_focused {
+            self.stale.extend(self.visible_keys());
             self.schedule_refresh(60);
         }
         self.was_focused = focused;
@@ -679,6 +830,13 @@ impl App {
             if now >= at && self.busy.is_none() {
                 self.pending_refresh = None;
                 self.refresh(false);
+                for key in std::mem::take(&mut self.stale) {
+                    if let Some(i) = self.tabs.iter().position(|t| t.key == key) {
+                        if self.active != Some(i) {
+                            self.refresh_tab(i, false);
+                        }
+                    }
+                }
             } else {
                 ctx.request_repaint_after(at.saturating_duration_since(now) + Duration::from_millis(5));
             }
@@ -726,11 +884,14 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let mut activate = None;
                 let mut close = None;
+                let mut split_add: Option<usize> = None;
+                let mut unsplit: Option<String> = None;
                 // tabs are reordered by dragging them: (dragged tab, pointer x) and every tab's centre
                 let mut dragging: Option<(usize, f32)> = None;
                 let mut centres = Vec::with_capacity(self.tabs.len());
                 for (i, t) in self.tabs.iter().enumerate() {
                     let active = self.active == Some(i);
+                    let in_split = self.split.len() >= 2 && self.split.contains(&t.key);
                     let name = t.name();
                     let dirty = t.change_count() > 0;
                     let font = FontId::proportional(13.0);
@@ -745,10 +906,13 @@ impl App {
                         }
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     }
-                    let fill = if active || resp.dragged() { c.surface } else if resp.hovered() { c.hover } else { Color32::TRANSPARENT };
+                    let fill = if active || resp.dragged() { c.surface } else if resp.hovered() || in_split { c.hover } else { Color32::TRANSPARENT };
                     ui.painter().rect_filled(rect, egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, fill);
                     if active {
                         ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0_f32, c.accent));
+                    } else if in_split {
+                        // on screen next to the active one
+                        ui.painter().line_segment([rect.left_top() + vec2(6.0, 0.5), rect.right_top() + vec2(-6.0, 0.5)], Stroke::new(2.0_f32, theme::with_alpha(c.accent, 110)));
                     }
                     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 15.0, rect.center().y), vec2(13.0, 13.0)), Icon::Box, if active { c.accent } else { c.muted });
                     let text_rect = Rect::from_min_max(pos2(rect.min.x + 27.0, rect.min.y), pos2(rect.max.x - 34.0, rect.max.y));
@@ -778,9 +942,19 @@ impl App {
                         activate = Some(i);
                     }
                     let path = t.key.clone();
+                    let can_split = !active || self.split.len() >= 2;
                     resp.on_hover_text(&path).context_menu(|ui| {
                         if ui.button("Cerrar pestaña").clicked() {
                             close = Some(i);
+                            ui.close_menu();
+                        }
+                        if in_split {
+                            if ui.button("Quitar de la pantalla dividida").clicked() {
+                                unsplit = Some(path.clone());
+                                ui.close_menu();
+                            }
+                        } else if can_split && ui.button("Abrir en pantalla dividida").clicked() {
+                            split_add = Some(i);
                             ui.close_menu();
                         }
                         if ui.button("Mostrar en el explorador").clicked() {
@@ -815,6 +989,8 @@ impl App {
                     }
                     ui.add_space(6.0);
                     self.update_button(ui);
+                    ui.add_space(6.0);
+                    self.split_button(ui, &mut split_add, &mut unsplit);
                 });
                 if let Some((from, x)) = dragging {
                     let to = centres.iter().enumerate().filter(|&(j, &cx)| j != from && cx < x).count();
@@ -826,7 +1002,11 @@ impl App {
                         self.persist();
                     }
                 }
-                if let Some(i) = close {
+                if let Some(i) = split_add {
+                    self.split_with(i);
+                } else if let Some(k) = unsplit {
+                    self.unsplit(&k);
+                } else if let Some(i) = close {
                     self.close_tab(i);
                 } else if let Some(i) = activate {
                     if self.active != Some(i) {
@@ -835,6 +1015,61 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Tab bar button that splits the screen to see several repositories at once.
+    fn split_button(&mut self, ui: &mut egui::Ui, add: &mut Option<usize>, remove: &mut Option<String>) {
+        if self.active.is_none() || self.tabs.len() < 2 && self.split.len() < 2 {
+            return;
+        }
+        let splitted = self.split.len() >= 2;
+        let id = egui::Id::new("split-menu");
+        let label = if splitted { format!("{} paneles", self.split.len()) } else { "Dividir".to_string() };
+        let resp = widgets::icon_text_button(ui, Icon::Split, &label, true).on_hover_text("Ver varios repositorios a la vez");
+        if resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(id));
+        }
+        let others: Vec<(usize, String)> =
+            self.tabs.iter().enumerate().filter(|(_, t)| !self.split.contains(&t.key) && self.active_key().as_ref() != Some(&t.key) || splitted && !self.split.contains(&t.key)).map(|(i, t)| (i, t.name())).collect();
+        let mut close_split = false;
+        let mut vertical = self.split_vertical;
+        egui::popup_below_widget(ui, id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            ui.set_min_width(220.0);
+            if !others.is_empty() && self.split.len() < Self::MAX_PANES {
+                ui.label(widgets::muted(if splitted { "Añadir un panel" } else { "Mostrar junto a" }));
+                for (i, name) in &others {
+                    if ui.button(name).clicked() {
+                        *add = Some(*i);
+                        ui.memory_mut(|m| m.close_popup());
+                    }
+                }
+            }
+            if splitted {
+                if !others.is_empty() {
+                    ui.separator();
+                }
+                ui.label(widgets::muted("Disposición"));
+                if ui.selectable_label(!vertical, "Lado a lado").clicked() {
+                    vertical = false;
+                }
+                if ui.selectable_label(vertical, "Uno encima de otro").clicked() {
+                    vertical = true;
+                }
+                ui.separator();
+                if ui.button("Cerrar la división").clicked() {
+                    close_split = true;
+                    ui.memory_mut(|m| m.close_popup());
+                }
+            }
+        });
+        let _ = remove;
+        if vertical != self.split_vertical {
+            self.split_vertical = vertical;
+            self.persist();
+        }
+        if close_split {
+            self.close_split();
+        }
     }
 
     fn toolbar(&mut self, ctx: &egui::Context) {
