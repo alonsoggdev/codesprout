@@ -11,21 +11,41 @@ use crate::store::ActionScope;
 use crate::theme;
 use crate::widgets;
 
+/// Below this width the changes view stacks its two columns.
+const NARROW: f32 = 760.0;
+/// Height of the commit box plus room for a couple of file rows.
+const fn commit_min_height() -> f32 {
+    COMMIT_H + 120.0
+}
+const COMMIT_H: f32 = 210.0;
+
 pub fn show(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     let c = theme::p();
     let rect = ui.available_rect_before_wrap();
-    let lw = app.store.settings.changes_width.clamp(260.0, (rect.width() - 260.0).max(260.0));
-    let left = egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + lw, rect.max.y));
-    let split = egui::Rect::from_min_max(egui::pos2(left.max.x, rect.min.y), egui::pos2(left.max.x + 4.0, rect.max.y));
-    let right = egui::Rect::from_min_max(egui::pos2(split.max.x, rect.min.y), rect.max);
-    ui.painter().rect_filled(split, 0.0, c.border);
-    let r = ui.interact(split, ui.id().with("changes-split"), Sense::drag());
-    if r.hovered() || r.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-    }
-    if r.dragged() {
-        app.store.settings.changes_width = (lw + r.drag_delta().x).clamp(260.0, (rect.width() - 260.0).max(260.0));
-        app.persist();
+    // narrow panes (split screen): one column, the lists on top and the diff below
+    let narrow = rect.width() < NARROW;
+    let (left, split, right);
+    if narrow {
+        let h = (rect.height() * 0.58).max(commit_min_height());
+        let top = h.min(rect.height());
+        left = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + top));
+        split = egui::Rect::from_min_max(egui::pos2(rect.min.x, left.max.y), egui::pos2(rect.max.x, left.max.y + 1.0));
+        right = egui::Rect::from_min_max(egui::pos2(rect.min.x, split.max.y), rect.max);
+        ui.painter().rect_filled(split, 0.0, c.border);
+    } else {
+        let lw = app.store.settings.changes_width.clamp(260.0, (rect.width() - 260.0).max(260.0));
+        left = egui::Rect::from_min_max(rect.min, egui::pos2(rect.min.x + lw, rect.max.y));
+        split = egui::Rect::from_min_max(egui::pos2(left.max.x, rect.min.y), egui::pos2(left.max.x + 4.0, rect.max.y));
+        right = egui::Rect::from_min_max(egui::pos2(split.max.x, rect.min.y), rect.max);
+        ui.painter().rect_filled(split, 0.0, c.border);
+        let r = ui.interact(split, ui.id().with("changes-split"), Sense::drag());
+        if r.hovered() || r.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if r.dragged() {
+            app.store.settings.changes_width = (lw + r.drag_delta().x).clamp(260.0, (rect.width() - 260.0).max(260.0));
+            app.persist();
+        }
     }
     // narrow panes (split screen): what does not fit is cut, it never spills over the neighbour
     let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(left));
@@ -43,7 +63,7 @@ fn lists(ui: &mut egui::Ui, app: &mut App, idx: usize, defer: &mut Defer) {
     let busy = app.busy.is_some();
     let t = &app.tabs[idx];
     let Some(s) = t.status.clone() else { return };
-    let commit_h = 210.0;
+    let commit_h = COMMIT_H;
     let rect = ui.available_rect_before_wrap();
     let lists_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.max.y - commit_h));
     let commit_rect = egui::Rect::from_min_max(egui::pos2(rect.min.x, lists_rect.max.y), rect.max);
